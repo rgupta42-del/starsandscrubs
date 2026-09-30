@@ -1,0 +1,190 @@
+{
+ "weeks": [
+  {
+   "label": "Week 4",
+   "season": 2026,
+   "order": 4,
+   "dates": "Thu Oct 1 \u2013 Mon Oct 5, 2026",
+   "games": [
+    {
+     "id": "g01",
+     "kickoff": "2026-10-01T20:15:00-04:00",
+     "lockAt": "2026-10-01T20:15:00-04:00",
+     "away": "PIT",
+     "awayName": "Steelers",
+     "home": "CLE",
+     "homeName": "Browns",
+     "tv": "Prime Video",
+     "note": ""
+    },
+    {
+     "id": "g02",
+     "kickoff": "2026-10-04T09:30:00-04:00",
+     "lockAt": "2026-10-04T09:30:00-04:00",
+     "away": "IND",
+     "awayName": "Colts",
+     "home": "WAS",
+     "homeName": "Commanders",
+     "tv": "NFL Network",
+     "note": "London"
+    },
+    {
+     "id": "g03",
+     "kickoff": "2026-10-04T13:00:00-04:00",
+     "lockAt": "2026-10-04T13:00:00-04:00",
+     "away": "TEN",
+     "awayName": "Titans",
+     "home": "BAL",
+     "homeName": "Ravens",
+     "tv": "CBS",
+     "note": ""
+    },
+    {
+     "id": "g04",
+     "kickoff": "2026-10-04T13:00:00-04:00",
+     "lockAt": "2026-10-04T13:00:00-04:00",
+     "away": "NE",
+     "awayName": "Patriots",
+     "home": "BUF",
+     "homeName": "Bills",
+     "tv": "CBS",
+     "note": ""
+    },
+    {
+     "id": "g05",
+     "kickoff": "2026-10-04T13:00:00-04:00",
+     "lockAt": "2026-10-04T13:00:00-04:00",
+     "away": "NYJ",
+     "awayName": "Jets",
+     "home": "CHI",
+     "homeName": "Bears",
+     "tv": "FOX",
+     "note": ""
+    },
+    {
+     "id": "g06",
+     "kickoff": "2026-10-04T13:00:00-04:00",
+     "lockAt": "2026-10-04T13:00:00-04:00",
+     "away": "JAX",
+     "awayName": "Jaguars",
+     "home": "CIN",
+     "homeName": "Bengals",
+     "tv": "CBS",
+     "note": ""
+    },
+    {
+     "id": "g07",
+     "kickoff": "2026-10-04T13:00:00-04:00",
+     "lockAt": "2026-10-04T13:00:00-04:00",
+     "away": "DAL",
+     "awayName": "Cowboys",
+     "home": "HOU",
+     "homeName": "Texans",
+     "tv": "FOX",
+     "note": ""
+    },
+    {
+     "id": "g08",
+     "kickoff": "2026-10-04T13:00:00-04:00",
+     "lockAt": "2026-10-04T13:00:00-04:00",
+     "away": "ARI",
+     "awayName": "Cardinals",
+     "home": "NYG",
+     "homeName": "Giants",
+     "tv": "CBS",
+     "note": ""
+    },
+    {
+     "id": "g09",
+     "kickoff": "2026-10-04T13:00:00-04:00",
+     "lockAt": "2026-10-04T13:00:00-04:00",
+     "away": "LAR",
+     "awayName": "Rams",
+     "home": "PHI",
+     "homeName": "Eagles",
+     "tv": "FOX",
+     "note": ""
+    },
+    {
+     "id": "g10",
+     "kickoff": "2026-10-04T13:00:00-04:00",
+     "lockAt": "2026-10-04T13:00:00-04:00",
+     "away": "GB",
+     "awayName": "Packers",
+     "home": "TB",
+     "homeName": "Buccaneers",
+     "tv": "FOX",
+     "note": ""
+    },
+    {
+     "id": "g11",
+     "kickoff": "2026-10-04T16:05:00-04:00",
+     "lockAt": "2026-10-04T13:00:00-04:00",
+     "away": "MIA",
+     "awayName": "Dolphins",
+     "home": "MIN",
+     "homeName": "Vikings",
+     "tv": "FOX",
+     "note": ""
+    },
+    {
+     "id": "g12",
+     "kickoff": "2026-10-04T16:25:00-04:00",
+     "lockAt": "2026-10-04T13:00:00-04:00",
+     "away": "KC",
+     "awayName": "Chiefs",
+     "home": "LV",
+     "homeName": "Raiders",
+     "tv": "CBS",
+     "note": ""
+    },
+    {
+     "id": "g13",
+     "kickoff": "2026-10-04T16:25:00-04:00",
+     "lockAt": "2026-10-04T13:00:00-04:00",
+     "away": "LAC",
+     "awayName": "Chargers",
+     "home": "SEA",
+     "homeName": "Seahawks",
+     "tv": "CBS",
+     "note": ""
+    },
+    {
+     "id": "g14",
+     "kickoff": "2026-10-04T16:25:00-04:00",
+     "lockAt": "2026-10-04T13:00:00-04:00",
+     "away": "DEN",
+     "awayName": "Broncos",
+     "home": "SF",
+     "homeName": "49ers",
+     "tv": "CBS",
+     "note": ""
+    },
+    {
+     "id": "g15",
+     "kickoff": "2026-10-04T20:20:00-04:00",
+     "lockAt": "2026-10-04T13:00:00-04:00",
+     "away": "DET",
+     "awayName": "Lions",
+     "home": "CAR",
+     "homeName": "Panthers",
+     "tv": "NBC",
+     "note": "Sunday Night"
+    },
+    {
+     "id": "g16",
+     "kickoff": "2026-10-05T20:15:00-04:00",
+     "lockAt": "2026-10-04T13:00:00-04:00",
+     "away": "ATL",
+     "awayName": "Falcons",
+     "home": "NO",
+     "homeName": "Saints",
+     "tv": "ESPN",
+     "note": "Monday Night"
+    }
+   ],
+   "winners": {},
+   "id": "w4"
+  }
+ ]
+}

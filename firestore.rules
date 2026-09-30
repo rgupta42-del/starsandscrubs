@@ -1,0 +1,59 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isAdmin() {
+      return request.auth != null
+        && request.auth.token.email == 'rgupta42@gmail.com'
+        && request.auth.token.email_verified == true;
+    }
+    function weekDoc(week) {
+      return get(/databases/$(database)/documents/weeks/$(week)).data;
+    }
+    function beforeLock(week, game) {
+      return request.time < weekDoc(week).locks[game];
+    }
+
+    // Schedule, lock times and results: everyone reads, only the commissioner writes.
+    match /weeks/{week} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // One doc per manager. Players write only their own name; the commissioner
+    // can add managers who send picks by chat (manual: true).
+    match /managers/{managerId} {
+      allow read: if true;
+      allow create, update: if isAdmin() || (
+        request.auth != null
+        && request.auth.uid == managerId
+        && request.resource.data.keys().hasOnly(['name', 'manual'])
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.name.size() <= 40
+        && request.resource.data.get('manual', false) == false
+      );
+      allow delete: if isAdmin();
+    }
+
+    // One doc per pick: <uid>__<week>__<game>.
+    // Players can add, change or clear their own picks only before that game locks.
+    match /picks/{pickId} {
+      allow read: if true;
+      allow create, update: if isAdmin() || (
+        request.auth != null
+        && request.resource.data.keys().hasOnly(['uid', 'week', 'game', 'team', 'at'])
+        && request.resource.data.uid == request.auth.uid
+        && pickId == request.auth.uid + '__' + request.resource.data.week + '__' + request.resource.data.game
+        && request.resource.data.at == request.time
+        && request.resource.data.team in weekDoc(request.resource.data.week).teams[request.resource.data.game]
+        && beforeLock(request.resource.data.week, request.resource.data.game)
+      );
+      allow delete: if isAdmin() || (
+        request.auth != null
+        && resource.data.uid == request.auth.uid
+        && beforeLock(resource.data.week, resource.data.game)
+      );
+    }
+  }
+}

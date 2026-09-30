@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="description" content="Stars and Scrubs weekly NFL pick'em">
+<meta property="og:title" content="Stars and Scrubs Pick'em">
+<meta property="og:description" content="Pick every NFL winner this week. 1 point per correct pick.">
+<title>Stars and Scrubs Pick'em</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Barlow:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap">
+<style>
+body{margin:0}
+[hidden]{display:none!important}
+:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+</style>
+<style>
+/* Layout: a single-column pick slip — header, week chips, tabbed body (Picks / Standings / Commish); game rows are two big team buttons */
+:root{
+  --bg:#EEF1EC; --panel:#FFFFFF; --fg:#152019; --muted:#5E6B62; --line:#D5DBD3;
+  --accent:#D2461E; --accent-ink:#FFFFFF; --accent-soft:#F8E3DA;
+  --ok:#2E7D4F; --ok-soft:#DDEFE3; --bad:#B3261E; --bad-soft:#F6DEDB; --chip:#E3E8E1;
+  --display:"Barlow Condensed","Arial Narrow",system-ui,sans-serif;
+  --body:"Barlow",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0F1512; --panel:#18201B; --fg:#E7EDE8; --muted:#97A59B; --line:#2B362F;
+  --accent:#F0663D; --accent-ink:#1A0C06; --accent-soft:#3A2119;
+  --ok:#5FC08A; --ok-soft:#173726; --bad:#F2837A; --bad-soft:#3D1D1A; --chip:#232D27; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0F1512; --panel:#18201B; --fg:#E7EDE8; --muted:#97A59B; --line:#2B362F;
+  --accent:#F0663D; --accent-ink:#1A0C06; --accent-soft:#3A2119;
+  --ok:#5FC08A; --ok-soft:#173726; --bad:#F2837A; --bad-soft:#3D1D1A; --chip:#232D27; color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font:16px/1.45 var(--body)}
+.wrap{max-width:720px;margin:0 auto;padding-inline:16px;padding-block:20px 48px;display:flex;flex-direction:column;gap:18px}
+header{display:flex;flex-direction:column;gap:4px}
+.eyebrow{font:700 13px/1 var(--display);letter-spacing:.14em;text-transform:uppercase;color:var(--accent)}
+h1{font:800 clamp(40px,11vw,64px)/.9 var(--display);margin:0;text-transform:uppercase;letter-spacing:.01em;text-wrap:balance}
+.sub{color:var(--muted);font-size:15px}
+.rules{font-size:14px;color:var(--muted);border-top:1px solid var(--line);padding-top:10px;margin-top:6px}
+.rules b{color:var(--fg);font-weight:600}
+.chips{display:flex;gap:8px;overflow-x:auto;padding-bottom:2px}
+.chip{flex:none;border:1px solid var(--line);background:var(--panel);color:var(--fg);font:700 15px/1 var(--display);letter-spacing:.06em;text-transform:uppercase;padding:9px 14px;border-radius:999px;cursor:pointer}
+.chip[aria-pressed="true"]{background:var(--fg);color:var(--bg);border-color:var(--fg)}
+.tabs{display:flex;border-bottom:2px solid var(--line);gap:4px}
+.tab{background:none;border:0;color:var(--muted);font:700 18px/1 var(--display);letter-spacing:.06em;text-transform:uppercase;padding:10px 12px;margin-bottom:-2px;border-bottom:3px solid transparent;cursor:pointer}
+.tab[aria-selected="true"]{color:var(--fg);border-bottom-color:var(--accent)}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:10px}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.row > *{min-width:0}
+label{font-weight:600;font-size:14px}
+input[type=text],select{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:9px 11px;flex:1 1 180px;min-width:0}
+.btn{font:700 15px/1 var(--display);letter-spacing:.06em;text-transform:uppercase;border:0;border-radius:8px;padding:11px 16px;cursor:pointer;background:var(--accent);color:var(--accent-ink)}
+.btn.ghost{background:var(--chip);color:var(--fg)}
+.btn:disabled{opacity:.5;cursor:default}
+.banner{border-radius:10px;padding:12px 14px;font-size:14px;background:var(--accent-soft);color:var(--fg)}
+.progress{display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap}
+.progress .big{font:800 30px/1 var(--display)}
+.progress .big small{font-size:16px;color:var(--muted);font-weight:600}
+.group{display:flex;flex-direction:column;gap:8px}
+.ghead{display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap;border-bottom:1px solid var(--line);padding-bottom:6px}
+.ghead h2{font:700 17px/1.1 var(--display);letter-spacing:.08em;text-transform:uppercase;margin:0}
+.pill{font:500 12px/1 var(--mono);padding:5px 8px;border-radius:999px;background:var(--chip);color:var(--muted);white-space:nowrap}
+.pill.open{background:var(--ok-soft);color:var(--ok)}
+.pill.lock{background:var(--bad-soft);color:var(--bad)}
+.game{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px;display:flex;flex-direction:column;gap:8px}
+.meta{display:flex;justify-content:space-between;gap:8px;font:500 12px/1.2 var(--mono);color:var(--muted);flex-wrap:wrap}
+.teams{display:grid;grid-template-columns:1fr auto 1fr;gap:8px;align-items:stretch}
+.at{align-self:center;font:700 14px var(--display);color:var(--muted)}
+.team{display:flex;flex-direction:column;align-items:flex-start;gap:2px;text-align:left;border:1.5px solid var(--line);background:var(--bg);color:var(--fg);border-radius:8px;padding:9px 11px;cursor:pointer;min-width:0}
+.team .ab{font:800 22px/1 var(--display);letter-spacing:.03em}
+.team .nm{font-size:13px;color:var(--muted);overflow-wrap:anywhere}
+.team.home{align-items:flex-end;text-align:right}
+.team[aria-pressed="true"]{border-color:var(--accent);background:var(--accent-soft);box-shadow:inset 0 0 0 1px var(--accent)}
+.team:disabled{cursor:default}
+.team.win{border-color:var(--ok)}
+.team.win .ab::after{content:" W";font-size:13px;color:var(--ok)}
+.foot{display:flex;justify-content:space-between;gap:8px;font-size:13px;color:var(--muted);flex-wrap:wrap}
+.res-ok{color:var(--ok);font-weight:600}.res-bad{color:var(--bad);font-weight:600}
+.tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:var(--panel)}
+table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
+th,td{padding:9px 10px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
+th{font:700 13px/1.1 var(--display);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+td.num,th.num{text-align:right}
+tr:last-child td{border-bottom:0}
+.rank{font:800 18px var(--display);color:var(--muted);width:2.2em}
+.me td{background:var(--accent-soft)}
+.pts{font:800 22px var(--display)}
+.grid td,.grid th{text-align:center;padding:7px 6px;font-size:13px}
+.grid th:first-child,.grid td:first-child{text-align:left;position:sticky;left:0;background:var(--panel)}
+.c-ok{color:var(--ok);font-weight:700}.c-bad{color:var(--bad);text-decoration:line-through}.c-hid{color:var(--muted)}
+.gh{display:flex;flex-direction:column;gap:2px;font-family:var(--mono);font-size:11px;font-weight:500;letter-spacing:0;text-transform:none}
+.gh .w{color:var(--ok)}
+.muted{color:var(--muted);font-size:14px}
+.empty{text-align:center;padding:28px 16px;color:var(--muted)}
+.small{font-size:13px}
+.adm{display:grid;grid-template-columns:1fr auto auto auto;gap:6px;align-items:center}
+.adm .t{font-size:14px}
+.mini{font:700 14px/1 var(--display);letter-spacing:.04em;border:1.5px solid var(--line);background:var(--bg);color:var(--fg);border-radius:6px;padding:8px 10px;cursor:pointer}
+.mini[aria-pressed="true"]{background:var(--ok);border-color:var(--ok);color:var(--panel)}
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(16px + env(safe-area-inset-bottom,0px));background:var(--fg);color:var(--bg);padding:10px 16px;border-radius:999px;font-size:14px}
+@media (prefers-reduced-motion:no-preference){.team,.chip,.mini{transition:background .12s,border-color .12s}}
+.linkbtn{background:none;border:0;padding:0;font:inherit;color:var(--accent);text-decoration:underline;cursor:pointer}
+code{font-family:var(--mono);font-size:.9em}
+footer{text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Stars and Scrubs · NFL Pick'em</div>
+    <h1 id="h-week">Weekly Pick'em</h1>
+    <div class="sub" id="h-dates">Loading this week's games…</div>
+    <div class="rules">Pick the winner of every game. <b>1 point</b> per correct pick, <b>0</b> for a miss or no pick. Each game locks at kickoff, and nothing locks later than <b>1:00 PM ET Sunday</b>. All times Eastern.</div>
+  </header>
+  <div class="chips" id="weeks" role="group" aria-label="Week"></div>
+  <div class="tabs" role="tablist" id="tabs"></div>
+  <main id="main" class="group"><div class="card empty">Loading…</div></main>
+  <footer class="muted small" id="foot"></footer>
+</div>
+<div class="toast" id="toast" hidden></div>
+
+<script src="config.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script>
+(function(){
+const TZ = "America/New_York";
+const ADMIN = (window.ADMIN_EMAIL || "").toLowerCase();
+const S = { uid:null, email:null, admin:false, weeks:{}, managers:{}, picks:{}, allPicks:null, pending:{}, weekId:null, tab:"picks", loaded:false, cmTarget:"", nameDraft:null, error:"" };
+let db, auth, unsubPicks = null, picksWeek = null;
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmt = (iso, o) => new Intl.DateTimeFormat("en-US", Object.assign({timeZone:TZ}, o)).format(new Date(iso));
+const dayTime = iso => fmt(iso,{weekday:"short",month:"short",day:"numeric"}) + ", " + fmt(iso,{hour:"numeric",minute:"2-digit"});
+const locked = g => Date.now() >= Date.parse(g.lockAt);
+function left(iso){ let ms = Date.parse(iso) - Date.now(); if (ms <= 0) return "Locked";
+  const d = Math.floor(ms/864e5), h = Math.floor(ms%864e5/36e5), m = Math.floor(ms%36e5/6e4);
+  return (d ? d+"d " : "") + (d || h ? h+"h " : "") + m + "m left"; }
+function toast(t){ const el=$("#toast"); el.textContent=t; el.hidden=false; clearTimeout(toast.t); toast.t=setTimeout(()=>el.hidden=true,2400); }
+const pid = (uid, wid, gid) => `${uid}__${wid}__${gid}`;
+
+// ---------- data helpers ----------
+function weekList(){ return Object.entries(S.weeks).sort((a,b)=>(a[1].order||0)-(b[1].order||0)); }
+function curWeekId(){ if (S.weekId && S.weeks[S.weekId]) return S.weekId; const l = weekList(); return l.length ? l[l.length-1][0] : null; }
+function pickOf(uid, wid, gid){ const k = pid(uid,wid,gid); if (k in S.pending) return S.pending[k]; const p = S.picks[k]; return p ? p.team : null; }
+function scoreWeek(uid, wid, source){ const w = S.weeks[wid]; if (!w) return {pts:0, made:0, decided:0};
+  let pts=0, made=0, decided=0; const win = w.winners || {};
+  for (const g of w.games) { const p = source ? (source[pid(uid,wid,g.id)]||{}).team : pickOf(uid,wid,g.id); if (p) made++;
+    if (win[g.id]) { decided++; if (p && p === win[g.id]) pts++; } }
+  return {pts, made, decided}; }
+function managerList(){ return Object.entries(S.managers).filter(([,m]) => m.name).map(([id,m]) => ({id, name:m.name, manual:!!m.manual})); }
+
+// ---------- writes ----------
+async function setPick(uid, wid, g, team, asAdmin){
+  if (!asAdmin && locked(g)) { toast("That game is locked"); return; }
+  if (!asAdmin && !(S.managers[S.uid] && S.managers[S.uid].name)) { toast("Save your name first"); $("#mgr-name")?.focus(); return; }
+  const k = pid(uid,wid,g.id), cur = pickOf(uid,wid,g.id), next = cur === team ? null : team;
+  S.pending[k] = next; render();
+  try { const ref = db.collection("picks").doc(k);
+    if (next) await ref.set({uid, week:wid, game:g.id, team:next, at:firebase.firestore.FieldValue.serverTimestamp()});
+    else await ref.delete(); }
+  catch(e){ toast(e.code === "permission-denied" ? "Not saved: that game is locked" : "Not saved. Check your connection and tap again."); }
+  finally { if (S.pending[k] === next) delete S.pending[k]; render(); } }
+
+async function saveName(uid, name, manual){
+  try { await db.collection("managers").doc(uid).set({name, manual:!!manual}); toast("Saved"); }
+  catch(e){ toast("Couldn't save the name"); } }
+
+// ---------- rendering ----------
+function render(){
+  const wid = curWeekId(), w = wid && S.weeks[wid];
+  $("#h-week").textContent = w ? (w.label || "Week") : "Weekly Pick'em";
+  $("#h-dates").textContent = S.error ? S.error : w ? `${w.dates || ""} · ${w.games.length} games` : (S.loaded ? "No week posted yet." : "Loading this week's games…");
+  $("#weeks").innerHTML = weekList().map(([id,x]) => `<button class="chip" data-week="${esc(id)}" aria-pressed="${id===wid}">${esc(x.label||id)}</button>`).join("");
+  const tabs = [["picks","My picks"],["standings","Standings"]].concat(S.admin ? [["commish","Commish"]] : []);
+  if (!tabs.some(t=>t[0]===S.tab)) S.tab = "picks";
+  $("#tabs").innerHTML = tabs.map(([k,l]) => `<button class="tab" role="tab" data-tab="${k}" aria-selected="${k===S.tab}">${l}</button>`).join("");
+  $("#foot").innerHTML = S.admin ? `Signed in as commissioner · <button class="linkbtn" id="signout">Sign out</button>` : `<button class="linkbtn" id="signin">Commissioner sign-in</button>`;
+  const m = $("#main");
+  if (S.error) { m.innerHTML = `<div class="card empty">${esc(S.error)}</div>`; return; }
+  if (!w) { m.innerHTML = S.admin && S.tab === "commish" ? renderCommish(null, null) : `<div class="card empty">${S.loaded ? "The commissioner hasn't posted this week's games yet." : "Loading…"}</div>`; return; }
+  m.innerHTML = S.tab === "standings" ? renderStandings(wid, w) : S.tab === "commish" ? renderCommish(wid, w) : renderPicks(wid, w);
+  if (S.tab === "standings" && !S.allPicks) loadAllPicks();
+}
+
+function groups(w){ const map = new Map(); for (const g of w.games) { if (!map.has(g.lockAt)) map.set(g.lockAt, []); map.get(g.lockAt).push(g); }
+  return [...map.entries()].sort((a,b)=>Date.parse(a[0])-Date.parse(b[0])); }
+
+function gameCard(g, wid, w, uid, asAdmin){
+  const p = pickOf(uid, wid, g.id), win = (w.winners||{})[g.id], lk = !asAdmin && locked(g);
+  const team = side => { const ab = g[side], nm = g[side+"Name"], sel = p === ab;
+    return `<button class="team ${side}${win===ab?" win":""}" data-pick="${esc(g.id)}" data-team="${esc(ab)}" data-uid="${esc(uid)}" ${asAdmin?'data-admin="1"':""} aria-pressed="${sel}" ${lk?"disabled":""} aria-label="${esc(nm)}${sel?", selected":""}"><span class="ab">${esc(ab)}</span><span class="nm">${esc(nm)}</span></button>`; };
+  let res = "";
+  if (win) res = win === "TIE" ? `<span>Tie · no points</span>` : !p ? `<span class="res-bad">No pick · 0</span>` : p === win ? `<span class="res-ok">Correct · +1</span>` : `<span class="res-bad">Missed · 0</span>`;
+  else if (lk) res = p ? `<span>Locked in: ${esc(p)}</span>` : `<span class="res-bad">Locked · no pick</span>`;
+  const split = lk ? splitText(wid, g) : "";
+  return `<div class="game"><div class="meta"><span>${esc(dayTime(g.kickoff))} ET</span><span>${esc(g.tv||"")}${g.note?" · "+esc(g.note):""}</span></div>
+    <div class="teams">${team("away")}<span class="at">@</span>${team("home")}</div>
+    ${res||split ? `<div class="foot">${res}<span>${split}</span></div>` : ""}</div>`; }
+
+function splitText(wid, g){ let a=0,h=0; for (const {id} of managerList()) { const p = pickOf(id,wid,g.id); if (p===g.away) a++; else if (p===g.home) h++; }
+  return a+h ? `League: ${esc(g.away)} ${a} · ${esc(g.home)} ${h}` : ""; }
+
+function renderPicks(wid, w){
+  const me = S.managers[S.uid] || {}, name = S.nameDraft ?? me.name ?? "";
+  const sc = scoreWeek(S.uid, wid);
+  let h = `<div class="card"><label for="mgr-name">Your manager name</label><div class="row"><input type="text" id="mgr-name" maxlength="40" placeholder="e.g. Rishi" value="${esc(name)}" autocomplete="nickname"><button class="btn ghost" id="save-name">Save name</button></div>
+    <div class="muted small">${me.name ? "Your picks are tied to this phone and browser. Switching phones? Send your picks to the commissioner." : "Add your name before you pick, so the league knows whose picks these are."}</div></div>`;
+  h += `<div class="progress"><div class="big">${sc.made}<small> / ${w.games.length} picked</small></div><div class="muted">${sc.decided ? `${sc.pts} of ${sc.decided} decided games correct` : "Tap a team to pick it. Tap again to clear."}</div></div>`;
+  for (const [lockAt, gs] of groups(w)) { const lk = Date.now() >= Date.parse(lockAt);
+    h += `<section class="group"><div class="ghead"><h2>Locks ${esc(dayTime(lockAt))}</h2><span class="pill ${lk?"lock":"open"}">${lk?"Locked":esc(left(lockAt))}</span></div>`
+      + gs.map(g => gameCard(g, wid, w, S.uid, false)).join("") + `</section>`; }
+  h += `<div class="row"><button class="btn ghost" id="copy-mine">Copy my picks</button><span class="muted small">Formatted for WhatsApp</span></div>`;
+  return h; }
+
+function renderStandings(wid, w){
+  const ms = managerList().map(x => { let season = 0;
+    if (S.allPicks) for (const id of Object.keys(S.weeks)) season += scoreWeek(x.id, id, S.allPicks).pts;
+    return Object.assign(x, {wk:scoreWeek(x.id, wid), season}); })
+    .sort((a,b)=> b.wk.pts-a.wk.pts || b.season-a.season || a.name.localeCompare(b.name));
+  if (!ms.length) return `<div class="card empty">No managers yet. Standings fill in as people save their names and picks.</div>`;
+  const decided = Object.values(w.winners||{}).filter(Boolean).length;
+  let rank=0, prev=null;
+  let h = `<div class="muted">${decided} of ${w.games.length} games final this week.</div><div class="tablewrap"><table><thead><tr><th></th><th>Manager</th><th class="num">${esc(w.label)}</th><th class="num">Season</th><th class="num">Picks</th></tr></thead><tbody>`;
+  ms.forEach((x,i) => { if (prev===null || x.wk.pts!==prev) rank=i+1; prev=x.wk.pts;
+    h += `<tr class="${x.id===S.uid?"me":""}"><td class="rank">${rank}</td><td>${esc(x.name)}${x.manual?' <span class="muted small">(via chat)</span>':""}</td><td class="num pts">${x.wk.pts}</td><td class="num">${S.allPicks?x.season:"…"}</td><td class="num">${x.wk.made}/${w.games.length}</td></tr>`; });
+  h += `</tbody></table></div><div class="ghead"><h2>Pick sheet</h2><span class="muted small">Others' picks show once a game locks</span></div><div class="tablewrap"><table class="grid"><thead><tr><th>Manager</th>`;
+  for (const g of w.games) { const r=(w.winners||{})[g.id]; h += `<th><span class="gh"><span>${esc(g.away)}</span><span>@${esc(g.home)}</span>${r?`<span class="w">${esc(r)}</span>`:""}</span></th>`; }
+  h += `</tr></thead><tbody>`;
+  for (const x of ms) { h += `<tr><td>${esc(x.name)}</td>`;
+    for (const g of w.games) { const p = pickOf(x.id,wid,g.id), r=(w.winners||{})[g.id];
+      if (!locked(g) && x.id!==S.uid) { h += `<td class="c-hid">${p?"✓":"·"}</td>`; continue; }
+      if (!p) { h += `<td class="c-hid">—</td>`; continue; }
+      h += `<td class="${r ? (p===r?"c-ok":"c-bad") : ""}">${esc(p)}</td>`; }
+    h += `</tr>`; }
+  return h + `</tbody></table></div>`; }
+
+function renderCommish(wid, w){
+  let h = `<div class="card"><div class="ghead"><h2>Schedule</h2></div><div class="muted small">Loads every week in <code>weeks.json</code> into the database. Re-run after a new week is added. Results already posted are kept.</div><div class="row"><button class="btn" id="sync">Publish schedule</button></div></div>`;
+  if (!w) return h;
+  h += `<div class="card"><div class="ghead"><h2>Final results · ${esc(w.label)}</h2><span class="muted small">Tap the winner. Tap again to clear.</span></div><div class="adm">`;
+  for (const g of w.games) { const r=(w.winners||{})[g.id];
+    h += `<span class="t">${esc(g.awayName)} @ ${esc(g.homeName)}</span>` + [g.away,g.home,"TIE"].map(t=>`<button class="mini" data-win="${esc(g.id)}" data-team="${esc(t)}" aria-pressed="${r===t}">${esc(t)}</button>`).join(""); }
+  h += `</div></div>`;
+  const manual = managerList().filter(x => x.manual);
+  h += `<div class="card"><div class="ghead"><h2>Enter picks from chat</h2></div>
+    <div class="muted small">For managers who send picks in WhatsApp. Picks you enter here count even after lock, so enter only what they sent before kickoff.</div>
+    <div class="row"><select id="cm-sel"><option value="">Choose a manager…</option>${manual.map(x=>`<option value="${esc(x.id)}" ${S.cmTarget===x.id?"selected":""}>${esc(x.name)}</option>`).join("")}</select></div>
+    <div class="row"><input type="text" id="cm-new" maxlength="40" placeholder="Or add a manager name"><button class="btn ghost" id="cm-add">Add</button></div></div>`;
+  if (S.cmTarget && S.managers[S.cmTarget]) h += `<div class="ghead"><h2>${esc(S.managers[S.cmTarget].name)}</h2></div>` + w.games.map(g => gameCard(g, wid, w, S.cmTarget, true)).join("");
+  h += `<div class="card"><div class="ghead"><h2>Post to the group chat</h2></div><div class="row"><button class="btn ghost" id="copy-slate">Copy this week's games</button><button class="btn ghost" id="copy-standings">Copy standings</button></div></div>`;
+  return h; }
+
+// ---------- copy ----------
+async function copy(text){ try { await navigator.clipboard.writeText(text); toast("Copied"); }
+  catch { const ta=document.createElement("textarea"); ta.value=text; document.body.appendChild(ta); ta.select(); try{document.execCommand("copy"); toast("Copied");}catch{toast("Select and copy the text");} setTimeout(()=>ta.remove(),50); } }
+const link = () => location.origin + location.pathname;
+function slateText(w){ let t = `🏈 Stars and Scrubs Pick'em · ${w.label}\nPick the winner of every game. 1 pt per correct pick.\nLocks at kickoff, never later than 1:00 PM ET Sunday.\n`;
+  for (const g of w.games) t += `\n${dayTime(g.kickoff)} · ${g.awayName} @ ${g.homeName}`; return t + `\n\nMake your picks: ${link()}`; }
+function myText(wid,w){ let t = `Stars and Scrubs · ${w.label} picks — ${(S.managers[S.uid]||{}).name || "(name)"}\n`;
+  for (const g of w.games) t += `\n${g.away} @ ${g.home}: ${pickOf(S.uid,wid,g.id) || "—"}`; return t; }
+function standingsText(wid,w){ const ms = managerList().map(x=>({n:x.name, s:scoreWeek(x.id,wid).pts})).sort((a,b)=>b.s-a.s);
+  return `Stars and Scrubs Pick'em · ${w.label} standings\n` + ms.map((x,i)=>`${i+1}. ${x.n} — ${x.s}`).join("\n") + `\n\n${link()}`; }
+
+// ---------- admin ----------
+async function syncSchedule(){
+  try { const res = await fetch("weeks.json", {cache:"no-store"}); const data = await res.json();
+    for (const wk of data.weeks) { const locks = {}, teams = {};
+      for (const g of wk.games) { locks[g.id] = firebase.firestore.Timestamp.fromDate(new Date(g.lockAt)); teams[g.id] = [g.away, g.home]; }
+      const ref = db.collection("weeks").doc(wk.id), snap = await ref.get();
+      const winners = snap.exists ? (snap.data().winners || {}) : {};
+      await ref.set({label:wk.label, order:wk.order, dates:wk.dates, season:wk.season, games:wk.games, locks, teams, winners}); }
+    toast(`Published ${data.weeks.length} week${data.weeks.length>1?"s":""}`); }
+  catch(e){ toast("Couldn't publish the schedule"); console.error(e); } }
+
+async function setWinner(wid, gid, team){ const w = S.weeks[wid], cur = (w.winners||{})[gid], val = cur === team ? null : team;
+  try { await db.collection("weeks").doc(wid).update({["winners."+gid]: val}); S.allPicks = null; }
+  catch(e){ toast("Couldn't save the result"); } }
+
+async function loadAllPicks(){ if (loadAllPicks.busy) return; loadAllPicks.busy = true;
+  try { const snap = await db.collection("picks").get(); const all = {}; snap.forEach(d => all[d.id] = d.data()); S.allPicks = all; render(); }
+  catch(e){} finally { loadAllPicks.busy = false; } }
+
+// ---------- events ----------
+document.addEventListener("click", e => {
+  const t = e.target.closest("button"); if (!t) return;
+  const wid = curWeekId(), w = S.weeks[wid];
+  if (t.dataset.week) { S.weekId = t.dataset.week; watchPicks(); render(); return; }
+  if (t.dataset.tab) { S.tab = t.dataset.tab; render(); return; }
+  if (t.dataset.pick) { setPick(t.dataset.uid, wid, w.games.find(x=>x.id===t.dataset.pick), t.dataset.team, !!t.dataset.admin); return; }
+  if (t.dataset.win) { setWinner(wid, t.dataset.win, t.dataset.team); return; }
+  if (t.id === "save-name") { const v = $("#mgr-name").value.trim(); if (!v) { toast("Enter a name first"); return; } S.nameDraft = null; saveName(S.uid, v, false); return; }
+  if (t.id === "cm-add") { const v = $("#cm-new").value.trim(); if (!v) return;
+    const slug = "m-" + (v.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"").slice(0,40) || "manager");
+    S.cmTarget = slug; saveName(slug, v, true); return; }
+  if (t.id === "sync") syncSchedule();
+  if (t.id === "signin") { const p = new firebase.auth.GoogleAuthProvider();
+    auth.signInWithPopup(p).catch(err => { if (err.code === "auth/popup-blocked" || err.code === "auth/operation-not-supported-in-this-environment") auth.signInWithRedirect(p); else toast("Sign-in didn't finish. Open this page in Safari or Chrome to sign in."); }); }
+  if (t.id === "signout") { auth.signOut(); }
+  if (t.id === "copy-mine") copy(myText(wid,w));
+  if (t.id === "copy-slate") copy(slateText(w));
+  if (t.id === "copy-standings") copy(standingsText(wid,w));
+});
+document.addEventListener("input", e => { if (e.target.id === "mgr-name") S.nameDraft = e.target.value; });
+document.addEventListener("change", e => { if (e.target.id === "cm-sel") { S.cmTarget = e.target.value; render(); } });
+setInterval(() => { if (!document.activeElement || document.activeElement.tagName !== "INPUT") render(); }, 30000);
+
+// ---------- boot ----------
+function watchPicks(){ const wid = curWeekId(); if (!wid || wid === picksWeek) return; picksWeek = wid;
+  if (unsubPicks) unsubPicks(); S.picks = {};
+  unsubPicks = db.collection("picks").where("week","==",wid).onSnapshot(s => { s.forEach(d => S.picks[d.id] = d.data());
+    s.docChanges().forEach(c => { if (c.type === "removed") delete S.picks[c.doc.id]; }); render(); }); }
+
+if (!window.FIREBASE_CONFIG) { S.error = "Setup isn't finished: add the Firebase config to config.js."; render(); return; }
+firebase.initializeApp(window.FIREBASE_CONFIG);
+db = firebase.firestore(); auth = firebase.auth();
+auth.getRedirectResult().catch(()=>{});
+auth.onAuthStateChanged(u => {
+  if (!u) { auth.signInAnonymously().catch(() => { S.error = "Couldn't connect. Check your connection and reload."; render(); }); return; }
+  S.uid = u.uid; S.email = (u.email||"").toLowerCase(); S.admin = !!S.email && S.email === ADMIN; render();
+});
+db.collection("weeks").onSnapshot(s => { S.weeks = {}; s.forEach(d => S.weeks[d.id] = d.data()); S.loaded = true; watchPicks(); render(); },
+  () => { S.error = "Couldn't load the games. Reload to try again."; render(); });
+db.collection("managers").onSnapshot(s => { S.managers = {}; s.forEach(d => S.managers[d.id] = d.data()); render(); });
+render();
+})();
+</script>
+
+</body>
+</html>
