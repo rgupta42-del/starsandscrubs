@@ -200,9 +200,16 @@ async function setPick(mgr, wid, g, team, asAdmin){
   } catch(e){ toast(e.code === "permission-denied" ? "Not saved: that game is locked or this team isn't yours" : "Not saved. Check your connection and tap again."); }
   finally { if (S.pending[k] === next) delete S.pending[k]; render(); } }
 
+async function releaseMine(){
+  const mine = myTeam(); if (!mine) return;
+  if (!S.confirmSwitch) { S.confirmSwitch = true; render(); clearTimeout(releaseMine.t); releaseMine.t = setTimeout(() => { S.confirmSwitch = false; render(); }, 6000); return; }
+  S.confirmSwitch = false;
+  try { await db.collection("managers").doc(mine.id).update({uid:null, claimedAt:null}); toast("Choose your team"); }
+  catch(e){ toast("Couldn't change your team. Reload and try again."); render(); } }
+
 async function claimTeam(id){
   const t = S.managers[id]; if (!t) return;
-  if (myTeam()) { toast("This phone is already set to " + myTeam().name + ". Ask the commissioner to switch it."); render(); return; }
+  if (myTeam()) { toast("This phone is already set to " + myTeam().name + ". Tap Change team first."); render(); return; }
   if (t.uid) { toast("That team is already set up on another phone. Ask the commissioner to release it."); render(); return; }
   try { await db.collection("managers").doc(id).update({uid:S.uid, claimedAt:firebase.firestore.FieldValue.serverTimestamp()}); toast("You're picking as " + t.name); }
   catch(e){ toast("Couldn't set your team. Reload and try again."); } }
@@ -246,13 +253,14 @@ function splitText(wid, g){ let a=0,h=0; for (const t of teamList()) { const p =
 function renderPicks(wid, w){
   const mine = myTeam(), teams = teamList();
   let h = `<div class="card"><label for="team-sel">Your team</label>`;
-  if (mine) h += `<div class="row"><div class="pts" style="font-size:24px">${esc(mine.name)}</div></div><div class="muted small">Picks from this phone count for ${esc(mine.name)}. Wrong team, or switching phones? Ask the commissioner to release it.</div>`;
+  if (mine) h += `<div class="row" style="justify-content:space-between"><div class="pts" style="font-size:24px">${esc(mine.name)}</div><button class="btn ghost" id="switch-team">${S.confirmSwitch ? "Tap again to confirm" : "Change team"}</button></div>
+    <div class="muted small">${S.confirmSwitch ? `This frees up ${esc(mine.name)} and lets you choose again. Picks already made stay with ${esc(mine.name)}.` : `Picks from this phone count for ${esc(mine.name)}. Picked the wrong team? Tap Change team. Switching phones? Tap Change team here first, or ask the commissioner.`}</div>`;
   else h += `<div class="row"><select id="team-sel"><option value="">Choose your team…</option>${teams.map(t=>`<option value="${esc(t.id)}" ${t.uid?"disabled":""}>${esc(t.name)}${t.uid?" (taken)":""}</option>`).join("")}</select></div>
-    <div class="muted small">Pick carefully: once you choose, your team is tied to this phone.</div>`;
+    <div class="muted small">Your team is tied to this phone. You can change it later if you pick the wrong one.</div>`;
   h += `<div class="muted small">Each pick records the time and your approximate location (about 1 km) for the league's audit log. Your browser asks first, and you can still pick if you decline.</div></div>`;
   if (!mine) { h += `<div class="progress"><div class="muted">Choose your team to start picking.</div></div>`; }
   else { const sc = scoreWeek(mine.id, wid);
-    h += `<div class="progress"><div class="big">${sc.made}<small> / ${w.games.length} picked</small></div><div class="muted">${sc.decided ? `${sc.pts} of ${sc.decided} decided games correct` : "Tap a team to pick it. Tap again to clear."}</div></div>`; }
+    h += `<div class="progress"><div class="big">${sc.made}<small> / ${w.games.length} picked</small></div><div class="muted">${sc.decided ? `${sc.pts} of ${sc.decided} decided games correct` : "Tap a team to pick it. You can change or clear a pick until that game locks."}</div></div>`; }
   for (const [lockAt, gs] of groups(w)) { const lk = Date.now() >= Date.parse(lockAt);
     h += `<section class="group"><div class="ghead"><h2>Locks ${esc(dayTime(lockAt))}</h2><span class="pill ${lk?"lock":"open"}">${lk?"Locked":esc(left(lockAt))}</span></div>`
       + gs.map(g => gameCard(g, wid, w, mine ? mine.id : null, false)).join("") + `</section>`; }
@@ -390,6 +398,7 @@ document.addEventListener("click", e => {
   if (t.id === "signin") { const p = new firebase.auth.GoogleAuthProvider();
     auth.signInWithPopup(p).catch(err => { if (err.code === "auth/popup-blocked" || err.code === "auth/operation-not-supported-in-this-environment") auth.signInWithRedirect(p); else toast("Sign-in didn't finish. Open this page in Safari or Chrome to sign in."); }); }
   if (t.id === "signout") { auth.signOut(); }
+  if (t.id === "switch-team") releaseMine();
   if (t.id === "copy-mine") copy(myText(wid,w));
   if (t.id === "copy-slate") copy(slateText(w));
   if (t.id === "copy-standings") copy(standingsText(wid,w));

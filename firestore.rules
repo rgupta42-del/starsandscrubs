@@ -24,15 +24,17 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
-    // One doc per team. A phone can claim an unclaimed team; only the commissioner can release it.
+    // One doc per team. A phone can claim a free team or let go of its own; the commissioner can release any team.
     match /managers/{team} {
       allow read: if true;
       allow create, delete: if isAdmin();
       allow update: if isAdmin() || (
         request.auth != null
-        && resource.data.uid == null
-        && request.resource.data.uid == request.auth.uid
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['uid', 'claimedAt'])
+        && (
+          (resource.data.uid == null && request.resource.data.uid == request.auth.uid)      // choose a free team
+          || (resource.data.uid == request.auth.uid && request.resource.data.uid == null)   // let go of your own team
+        )
       );
     }
 
