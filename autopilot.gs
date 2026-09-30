@@ -2,11 +2,12 @@
  * Stars and Scrubs Pick'em — autopilot (Google Apps Script)
  *
  * Runs every hour on Google's servers. No one has to do anything week to week:
+ *   • Keeps the full schedule (Weeks FIRST_WEEK–LAST_WEEK) and the 12 teams loaded on the site,
+ *     picking up NFL time changes (flexed games) for games that haven't locked yet.
  *   • Posts winners as NFL games go final (from ESPN's public scoreboard).
  *   • When the week's last game is final, emails the weekly review (standings, every
  *     team's picks, full audit trail) to RECIPIENTS, with a results CSV and an audit CSV attached.
- *   • Then loads next week's games with lock times and emails the new slate, with a
- *     message ready to paste into the league WhatsApp.
+ *   • Then emails next week's slate, with a message ready to paste into the league WhatsApp.
  * It also backs the "Email the review" button on the site (doPost).
  *
  * SETUP (about 5 minutes; easiest on a computer, signed in as rgupta42@gmail.com —
@@ -27,7 +28,10 @@ const PROJECT = 'stars-and-scrubs-pick-em';
 const RECIPIENTS = 'rgupta42@gmail.com,vkudur@gmail.com';
 const SITE = 'https://rgupta42-del.github.io/starsandscrubs/';
 const TZ = 'America/New_York';
-const LAST_WEEK = 18;
+const SEASON = 2026;
+const FIRST_WEEK = 4;
+const LAST_WEEK = 17;
+const TEAMS_URL = 'https://raw.githubusercontent.com/rgupta42-del/starsandscrubs/main/teams.json';
 const ESPN_TO_SITE = { WSH: 'WAS' };
 const BASE = 'https://firestore.googleapis.com/v1/projects/' + PROJECT + '/databases/(default)/documents';
 
@@ -35,15 +39,33 @@ const BASE = 'https://firestore.googleapis.com/v1/projects/' + PROJECT + '/datab
 function setup() {
   ScriptApp.getProjectTriggers().forEach(t => ScriptApp.deleteTrigger(t));
   ScriptApp.newTrigger('tick').timeBased().everyHours(1).create();
-  tick();
+  syncNow();
 }
 
 function tick() {
-  const weeks = listDocs('weeks').sort((a, b) => (a.data.order || 0) - (b.data.order || 0));
-  if (!weeks.length) return;
-  const cur = weeks[weeks.length - 1];
-  updateResults(cur);
-  finishWeek(cur, weeks);
+  syncTeams();
+  let weeks = listDocs('weeks');
+  const props = PropertiesService.getScriptProperties();
+  const last = Number(props.getProperty('scheduleSyncedAt') || 0);
+  if (weeks.length < LAST_WEEK - FIRST_WEEK + 1 || Date.now() - last > 6 * 3600e3) {
+    syncSchedule(weeks);
+    props.setProperty('scheduleSyncedAt', String(Date.now()));
+    weeks = listDocs('weeks');
+  }
+  weeks.sort((a, b) => (a.data.order || 0) - (b.data.order || 0));
+  const now = Date.now();
+  for (const wk of weeks) {
+    const games = wk.data.games || [];
+    if (wk.data.reviewSentAt || !games.some(g => Date.parse(g.kickoff) < now)) continue;
+    updateResults(wk);
+    finishWeek(wk, weeks);
+  }
+}
+
+// Run this from the editor any time to reload teams and the full schedule right away.
+function syncNow() {
+  PropertiesService.getScriptProperties().deleteProperty('scheduleSyncedAt');
+  tick();
 }
 
 // Manual send from the site's Review tab.
@@ -83,21 +105,48 @@ function finishWeek(wk, weeks) {
   if (!games.length) return;
   const lastKick = Math.max.apply(null, games.map(g => Date.parse(g.kickoff)));
   const allFinal = games.every(g => winners[g.id]);
-  if (!w.reviewSentAt && (allFinal || Date.now() > lastKick + 48 * 3600e3)) {
-    sendReview(wk.id, w, weeks);
-    patchDoc('weeks/' + wk.id, { reviewSentAt: new Date() }, ['reviewSentAt']);
-    w.reviewSentAt = new Date();
-  }
-  if (w.reviewSentAt && (w.order || 0) < LAST_WEEK) {
-    const nextId = 'w' + (w.order + 1);
-    if (!weeks.some(x => x.id === nextId)) createWeek(w.order + 1, w.season || new Date().getFullYear());
+  if (w.reviewSentAt || !(allFinal || Date.now() > lastKick + 48 * 3600e3)) return;
+  sendReview(wk.id, w, weeks);
+  patchDoc('weeks/' + wk.id, { reviewSentAt: new Date() }, ['reviewSentAt']);
+  w.reviewSentAt = new Date();
+  const next = weeks.find(x => x.data.order === w.order + 1);
+  if (next && !next.data.slateSentAt) {
+    sendSlate(next.data);
+    patchDoc('weeks/' + next.id, { slateSentAt: new Date() }, ['slateSentAt']);
   }
 }
 
-// ---------- next week ----------
-function createWeek(order, season) {
+// ---------- teams ----------
+function syncTeams() {
+  const res = UrlFetchApp.fetch(TEAMS_URL, { muteHttpExceptions: true });
+  if (res.getResponseCode() !== 200) return;
+  const teams = JSON.parse(res.getContentText());
+  const have = {}; listDocs('managers').forEach(d => have[d.id] = d.data);
+  teams.forEach(t => {
+    if (!have[t.id]) patchDoc('managers/' + t.id, { name: t.name, uid: null }, null);
+    else if (have[t.id].name !== t.name) patchDoc('managers/' + t.id, { name: t.name }, ['name']);
+  });
+}
+
+// ---------- schedule ----------
+// Loads or refreshes every week from FIRST_WEEK to LAST_WEEK. Game ids stay fixed per matchup so saved
+// picks never move, and a game's lock time never changes once it has locked.
+function syncSchedule(existing) {
+  const byId = {}; existing.forEach(d => byId[d.id] = d.data);
+  const now = Date.now();
+  for (let order = FIRST_WEEK; order <= LAST_WEEK; order++) {
+    const id = 'w' + order, old = byId[id];
+    if (old && (old.games || []).length && (old.games || []).every(g => Date.parse(g.lockAt) <= now)) continue;
+    const built = buildWeek(order, SEASON, old);
+    if (!built) continue;
+    if (old) patchDoc('weeks/' + id, built, Object.keys(built));
+    else { built.winners = {}; patchDoc('weeks/' + id, built, null); }
+  }
+}
+
+function buildWeek(order, season, old) {
   const events = espnWeek(order, season);
-  if (!events.length) return;
+  if (!events.length) return null;
   const rows = events.map(e => {
     const comp = e.competitions[0];
     const home = comp.competitors.find(c => c.homeAway === 'home'), away = comp.competitors.find(c => c.homeAway === 'away');
@@ -116,20 +165,22 @@ function createWeek(order, season) {
   const offset = Utilities.formatDate(new Date(sunYmd + 'T17:00:00Z'), TZ, 'XXX');
   const cap = new Date(sunYmd + 'T13:00:00' + offset);
 
+  const oldGames = (old && old.games) || [], now = Date.now();
+  let nextNum = oldGames.reduce((m, g) => Math.max(m, Number(g.id.slice(1)) || 0), 0);
   const games = [], locks = {}, teams = {};
-  rows.forEach((r, i) => {
-    const id = 'g' + String(i + 1).padStart(2, '0');
-    const lock = r.kickoff < cap ? r.kickoff : cap;
+  rows.forEach(r => {
+    const prev = oldGames.find(g => g.away === r.away && g.home === r.home);
+    const id = prev ? prev.id : 'g' + String(++nextNum).padStart(2, '0');
+    let lock = r.kickoff < cap ? r.kickoff : cap;
+    if (prev && Date.parse(prev.lockAt) <= now) lock = new Date(prev.lockAt);
     games.push({ id: id, kickoff: r.kickoff.toISOString(), lockAt: lock.toISOString(), away: r.away, awayName: r.awayName,
       home: r.home, homeName: r.homeName, tv: r.tv, note: r.note });
     locks[id] = lock; teams[id] = [r.away, r.home];
   });
   const last = rows[rows.length - 1].kickoff;
-  const doc = { label: 'Week ' + order, order: order, season: season,
+  return { label: 'Week ' + order, order: order, season: season,
     dates: Utilities.formatDate(first, TZ, 'EEE MMM d') + ' – ' + Utilities.formatDate(last, TZ, 'EEE MMM d, yyyy'),
-    games: games, locks: locks, teams: teams, winners: {} };
-  patchDoc('weeks/w' + order, doc, null);
-  sendSlate(doc);
+    games: games, locks: locks, teams: teams };
 }
 
 // ---------- emails ----------

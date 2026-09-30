@@ -133,7 +133,6 @@ footer{text-align:center}
 (function(){
 const TZ = "America/New_York";
 const ADMINS = (window.ADMIN_EMAILS || [window.ADMIN_EMAIL]).filter(Boolean).map(e => e.toLowerCase());
-const TEAMS = window.TEAMS || [];
 const S = { uid:null, email:null, admin:false, weeks:{}, managers:{}, picks:{}, allPicks:null, pending:{}, audit:null, auditWeek:null,
   weekId:null, tab:"picks", loaded:false, cmTarget:"", error:"", locNote:"" };
 let db, auth, unsubPicks = null, picksWeek = null;
@@ -152,7 +151,10 @@ const tsDate = t => t && t.toDate ? t.toDate() : null;
 
 // ---------- data helpers ----------
 function weekList(){ return Object.entries(S.weeks).sort((a,b)=>(a[1].order||0)-(b[1].order||0)); }
-function curWeekId(){ if (S.weekId && S.weeks[S.weekId]) return S.weekId; const l = weekList(); return l.length ? l[l.length-1][0] : null; }
+function curWeekId(){ if (S.weekId && S.weeks[S.weekId]) return S.weekId; const l = weekList(); if (!l.length) return null;
+  // The current week stays up until noon ET the day after its last game (Tuesday for most weeks).
+  const cur = l.find(([,w]) => Date.now() < Math.max(...(w.games||[]).map(g => Date.parse(g.kickoff))) + 16*3600e3);
+  return (cur || l[l.length-1])[0]; }
 function teamList(){ return Object.entries(S.managers).map(([id,m]) => ({id, name:m.name, uid:m.uid||null})).sort((a,b)=>a.id.localeCompare(b.id)); }
 function myTeam(){ return S.uid ? teamList().find(t => t.uid === S.uid) || null : null; }
 const teamName = id => (S.managers[id] || {}).name || id;
@@ -217,7 +219,7 @@ function render(){
   $("#foot").innerHTML = S.admin ? `Signed in as commissioner · <button class="linkbtn" id="signout">Sign out</button>` : `<button class="linkbtn" id="signin">Commissioner sign-in</button>`;
   const m = $("#main");
   if (S.error) { m.innerHTML = `<div class="card empty">${esc(S.error)}</div>`; return; }
-  if (!w) { m.innerHTML = S.admin && S.tab === "commish" ? renderCommish(null, null) : `<div class="card empty">${S.loaded ? "The commissioner hasn't posted this week's games yet." : "Loading…"}</div>`; return; }
+  if (!w) { m.innerHTML = `<div class="card empty">${S.loaded ? "The schedule is loading. Check back in a few minutes." : "Loading…"}</div>`; return; }
   m.innerHTML = S.tab === "standings" ? renderStandings(wid, w) : S.tab === "commish" ? renderCommish(wid, w) : S.tab === "review" ? renderReview(wid, w) : renderPicks(wid, w);
   if ((S.tab === "standings" || S.tab === "review") && !S.allPicks) loadAllPicks();
   if (S.tab === "review" && (S.auditWeek !== wid || !S.audit)) loadAudit(wid);
@@ -259,7 +261,7 @@ function renderPicks(wid, w){
 
 function renderStandings(wid, w){
   const ms = standings(wid);
-  if (!ms.length) return `<div class="card empty">Teams appear once the commissioner publishes the schedule.</div>`;
+  if (!ms.length) return `<div class="card empty">Teams are loading. Check back in a few minutes.</div>`;
   const decided = Object.values(w.winners||{}).filter(Boolean).length, mine = myTeam();
   let rank=0, prev=null;
   let h = `<div class="muted">${decided} of ${w.games.length} games final this week.</div><div class="tablewrap"><table><thead><tr><th></th><th>Team</th><th class="num">${esc(w.label)}</th><th class="num">Season</th><th class="num">Picks</th></tr></thead><tbody>`;
@@ -277,7 +279,7 @@ function renderStandings(wid, w){
   return h + `</tbody></table></div>`; }
 
 function renderCommish(wid, w){
-  let h = `<div class="card"><div class="ghead"><h2>Schedule and teams</h2></div><div class="muted small">Loads every week in <code>weeks.json</code> and the team list in <code>config.js</code>. Re-run after adding a week. Results and team phones are kept.</div><div class="row"><button class="btn" id="sync">Publish schedule</button></div></div>`;
+  let h = "";
   if (!w) return h;
   h += `<div class="card"><div class="ghead"><h2>Final results · ${esc(w.label)}</h2><span class="muted small">Tap the winner. Tap again to clear.</span></div><div class="adm">`;
   for (const g of w.games) { const r=(w.winners||{})[g.id];
@@ -359,16 +361,6 @@ function myText(wid,w){ const mine = myTeam(); let t = `Stars and Scrubs · ${w.
 function standingsText(wid,w){ return `Stars and Scrubs Pick'em · ${w.label} standings\n` + standings(wid).map((x,i)=>`${i+1}. ${x.name} — ${x.wk.pts}`).join("\n") + `\n\n${link()}`; }
 
 // ---------- admin ----------
-async function syncSchedule(){
-  try { const res = await fetch("weeks.json", {cache:"no-store"}); const data = await res.json();
-    for (const wk of data.weeks) { const locks = {}, teams = {};
-      for (const g of wk.games) { locks[g.id] = firebase.firestore.Timestamp.fromDate(new Date(g.lockAt)); teams[g.id] = [g.away, g.home]; }
-      await db.collection("weeks").doc(wk.id).set({label:wk.label, order:wk.order, dates:wk.dates, season:wk.season, games:wk.games, locks, teams}, {merge:true}); }
-    for (const t of TEAMS) { const ref = db.collection("managers").doc(t.id), snap = await ref.get();
-      if (snap.exists) await ref.update({name:t.name}); else await ref.set({name:t.name, uid:null}); }
-    toast(`Published ${data.weeks.length} week${data.weeks.length>1?"s":""} and ${TEAMS.length} teams`); }
-  catch(e){ toast("Couldn't publish the schedule"); console.error(e); } }
-
 async function setWinner(wid, gid, team){ const w = S.weeks[wid], cur = (w.winners||{})[gid], val = cur === team ? null : team;
   try { await db.collection("weeks").doc(wid).update({["winners."+gid]: val}); S.allPicks = null; }
   catch(e){ toast("Couldn't save the result"); } }
@@ -393,7 +385,6 @@ document.addEventListener("click", e => {
     setPick(t.dataset.mgr, wid, w.games.find(x=>x.id===t.dataset.pick), t.dataset.team, !!t.dataset.admin); return; }
   if (t.dataset.win) { setWinner(wid, t.dataset.win, t.dataset.team); return; }
   if (t.dataset.release) { release(t.dataset.release); return; }
-  if (t.id === "sync") syncSchedule();
   if (t.id === "send-review") sendReview(wid, w);
   if (t.id === "csv") downloadCsv(wid, w);
   if (t.id === "signin") { const p = new firebase.auth.GoogleAuthProvider();
