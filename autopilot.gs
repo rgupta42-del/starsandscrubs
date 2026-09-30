@@ -4,7 +4,7 @@
  * Runs every hour on Google's servers. No one has to do anything week to week:
  *   • Posts winners as NFL games go final (from ESPN's public scoreboard).
  *   • When the week's last game is final, emails the weekly review (standings, every
- *     team's picks, full audit trail) to RECIPIENTS.
+ *     team's picks, full audit trail) to RECIPIENTS, with a results CSV and an audit CSV attached.
  *   • Then loads next week's games with lock times and emails the new slate, with a
  *     message ready to paste into the league WhatsApp.
  * It also backs the "Email the review" button on the site (doPost).
@@ -186,7 +186,20 @@ function sendReview(wid, w, weeks) {
     h += '</table>';
   }
   h += '<p style="color:#5E6B62;font-size:12px">Locations are approximate (about 1 km) and come from each manager\'s browser with their permission.</p></div>';
-  MailApp.sendEmail({ to: RECIPIENTS, subject: "Stars and Scrubs Pick'em · " + w.label + ' review', htmlBody: h, name: "Stars and Scrubs Pick'em" });
+  // Results files for double-checking: one row per team with every pick, point and total; plus the audit trail.
+  const q = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+  const head = ['Rank', 'Team'].concat(w.games.map(g => g.away + ' @ ' + g.home), ['Week points', 'Season points', 'Picks made']);
+  const winRow = ['', 'WINNER'].concat(w.games.map(g => (w.winners || {})[g.id] || 'not final'), ['', '', '']);
+  const lines = [head, winRow].concat(rows.map((r, i) => [i + 1, r.name].concat(w.games.map(g => {
+    const p = pickOf(r.id, wid, g.id), win = (w.winners || {})[g.id];
+    return p ? p + (win ? (p === win ? ' (1)' : ' (0)') : '') : '— (0)'; }), [r.wk, r.season, r.made])));
+  const resultsCsv = lines.map(l => l.map(q).join(',')).join('\n');
+  const auditCsv = [['Time (ET)', 'Team', 'Game', 'Action', 'Pick', 'Latitude', 'Longitude', 'Accuracy (m)', 'Location status', 'Entered by', 'After lock']]
+    .concat(audit.map(a => { const l = a.loc || {}; return [stamp(a.at), nameOf(a.mgr), gameLabel(a.game), a.action, a.pick || '', l.lat, l.lng, l.acc, l.status, a.by === 'commish' ? 'Commissioner' : 'Player', late(a) ? 'yes' : '']; }))
+    .map(l => l.map(q).join(',')).join('\n');
+  const slug = 'stars-and-scrubs-' + w.label.toLowerCase().replace(/\s+/g, '-');
+  MailApp.sendEmail({ to: RECIPIENTS, subject: "Stars and Scrubs Pick'em · " + w.label + ' review', htmlBody: h, name: "Stars and Scrubs Pick'em",
+    attachments: [Utilities.newBlob(resultsCsv, 'text/csv', slug + '-results.csv'), Utilities.newBlob(auditCsv, 'text/csv', slug + '-audit.csv')] });
 }
 
 // ---------- ESPN ----------
