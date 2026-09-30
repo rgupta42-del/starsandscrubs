@@ -13,6 +13,10 @@ service cloud.firestore {
     function beforeLock(week, game) {
       return request.time < weekDoc(week).locks[game];
     }
+    function ownsTeam(team) {
+      return request.auth != null
+        && get(/databases/$(database)/documents/managers/$(team)).data.uid == request.auth.uid;
+    }
 
     // Schedule, lock times and results: everyone reads, only the commissioner writes.
     match /weeks/{week} {
@@ -20,40 +24,47 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
-    // One doc per manager. Players write only their own name; the commissioner
-    // can add managers who send picks by chat (manual: true).
-    match /managers/{managerId} {
+    // One doc per team. A phone can claim an unclaimed team; only the commissioner can release it.
+    match /managers/{team} {
       allow read: if true;
-      allow create, update: if isAdmin() || (
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin() || (
         request.auth != null
-        && request.auth.uid == managerId
-        && request.resource.data.keys().hasOnly(['name', 'manual'])
-        && request.resource.data.name is string
-        && request.resource.data.name.size() > 0
-        && request.resource.data.name.size() <= 40
-        && request.resource.data.get('manual', false) == false
+        && resource.data.uid == null
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['uid', 'claimedAt'])
       );
-      allow delete: if isAdmin();
     }
 
-    // One doc per pick: <uid>__<week>__<game>.
-    // Players can add, change or clear their own picks only before that game locks.
+    // One doc per pick: <team>__<week>__<game>. Only the team's phone, only before that game locks.
     match /picks/{pickId} {
       allow read: if true;
       allow create, update: if isAdmin() || (
-        request.auth != null
-        && request.resource.data.keys().hasOnly(['uid', 'week', 'game', 'team', 'at'])
-        && request.resource.data.uid == request.auth.uid
-        && pickId == request.auth.uid + '__' + request.resource.data.week + '__' + request.resource.data.game
+        ownsTeam(request.resource.data.mgr)
+        && request.resource.data.keys().hasOnly(['mgr', 'week', 'game', 'pick', 'at', 'loc'])
+        && pickId == request.resource.data.mgr + '__' + request.resource.data.week + '__' + request.resource.data.game
         && request.resource.data.at == request.time
-        && request.resource.data.team in weekDoc(request.resource.data.week).teams[request.resource.data.game]
+        && request.resource.data.pick in weekDoc(request.resource.data.week).teams[request.resource.data.game]
         && beforeLock(request.resource.data.week, request.resource.data.game)
       );
       allow delete: if isAdmin() || (
-        request.auth != null
-        && resource.data.uid == request.auth.uid
+        ownsTeam(resource.data.mgr)
         && beforeLock(resource.data.week, resource.data.game)
       );
+    }
+
+    // Audit trail: append-only. Every pick, change and clear writes one entry with server time and location.
+    // Only the commissioner can read it. Nobody can edit or delete entries.
+    match /audit/{entry} {
+      allow read: if isAdmin();
+      allow create: if (isAdmin() && request.resource.data.by == 'commish' && request.resource.data.at == request.time) || (
+        ownsTeam(request.resource.data.mgr)
+        && request.resource.data.keys().hasOnly(['mgr', 'week', 'game', 'pick', 'action', 'at', 'loc', 'by'])
+        && request.resource.data.by == 'player'
+        && request.resource.data.at == request.time
+        && beforeLock(request.resource.data.week, request.resource.data.game)
+      );
+      allow update, delete: if false;
     }
   }
 }

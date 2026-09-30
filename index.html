@@ -101,6 +101,8 @@ tr:last-child td{border-bottom:0}
 .adm .t{font-size:14px}
 .mini{font:700 14px/1 var(--display);letter-spacing:.04em;border:1.5px solid var(--line);background:var(--bg);color:var(--fg);border-radius:6px;padding:8px 10px;cursor:pointer}
 .mini[aria-pressed="true"]{background:var(--ok);border-color:var(--ok);color:var(--panel)}
+.adm a{color:var(--accent)}
+td a{color:var(--accent)}
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(16px + env(safe-area-inset-bottom,0px));background:var(--fg);color:var(--bg);padding:10px 16px;border-radius:999px;font-size:14px}
 @media (prefers-reduced-motion:no-preference){.team,.chip,.mini{transition:background .12s,border-color .12s}}
 .linkbtn{background:none;border:0;padding:0;font:inherit;color:var(--accent);text-decoration:underline;cursor:pointer}
@@ -131,45 +133,77 @@ footer{text-align:center}
 (function(){
 const TZ = "America/New_York";
 const ADMIN = (window.ADMIN_EMAIL || "").toLowerCase();
-const S = { uid:null, email:null, admin:false, weeks:{}, managers:{}, picks:{}, allPicks:null, pending:{}, weekId:null, tab:"picks", loaded:false, cmTarget:"", nameDraft:null, error:"" };
+const TEAMS = window.TEAMS || [];
+const S = { uid:null, email:null, admin:false, weeks:{}, managers:{}, picks:{}, allPicks:null, pending:{}, audit:null, auditWeek:null,
+  weekId:null, tab:"picks", loaded:false, cmTarget:"", error:"", locNote:"" };
 let db, auth, unsubPicks = null, picksWeek = null;
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-const fmt = (iso, o) => new Intl.DateTimeFormat("en-US", Object.assign({timeZone:TZ}, o)).format(new Date(iso));
+const fmt = (d, o) => new Intl.DateTimeFormat("en-US", Object.assign({timeZone:TZ}, o)).format(d instanceof Date ? d : new Date(d));
 const dayTime = iso => fmt(iso,{weekday:"short",month:"short",day:"numeric"}) + ", " + fmt(iso,{hour:"numeric",minute:"2-digit"});
+const stamp = d => d ? fmt(d,{month:"short",day:"numeric"}) + " " + fmt(d,{hour:"numeric",minute:"2-digit",second:"2-digit"}) : "pending";
 const locked = g => Date.now() >= Date.parse(g.lockAt);
 function left(iso){ let ms = Date.parse(iso) - Date.now(); if (ms <= 0) return "Locked";
   const d = Math.floor(ms/864e5), h = Math.floor(ms%864e5/36e5), m = Math.floor(ms%36e5/6e4);
   return (d ? d+"d " : "") + (d || h ? h+"h " : "") + m + "m left"; }
-function toast(t){ const el=$("#toast"); el.textContent=t; el.hidden=false; clearTimeout(toast.t); toast.t=setTimeout(()=>el.hidden=true,2400); }
-const pid = (uid, wid, gid) => `${uid}__${wid}__${gid}`;
+function toast(t){ const el=$("#toast"); el.textContent=t; el.hidden=false; clearTimeout(toast.t); toast.t=setTimeout(()=>el.hidden=true,2600); }
+const pid = (mgr, wid, gid) => `${mgr}__${wid}__${gid}`;
+const tsDate = t => t && t.toDate ? t.toDate() : null;
 
 // ---------- data helpers ----------
 function weekList(){ return Object.entries(S.weeks).sort((a,b)=>(a[1].order||0)-(b[1].order||0)); }
 function curWeekId(){ if (S.weekId && S.weeks[S.weekId]) return S.weekId; const l = weekList(); return l.length ? l[l.length-1][0] : null; }
-function pickOf(uid, wid, gid){ const k = pid(uid,wid,gid); if (k in S.pending) return S.pending[k]; const p = S.picks[k]; return p ? p.team : null; }
-function scoreWeek(uid, wid, source){ const w = S.weeks[wid]; if (!w) return {pts:0, made:0, decided:0};
+function teamList(){ return Object.entries(S.managers).map(([id,m]) => ({id, name:m.name, uid:m.uid||null})).sort((a,b)=>a.id.localeCompare(b.id)); }
+function myTeam(){ return S.uid ? teamList().find(t => t.uid === S.uid) || null : null; }
+const teamName = id => (S.managers[id] || {}).name || id;
+function pickOf(mgr, wid, gid){ const k = pid(mgr,wid,gid); if (k in S.pending) return S.pending[k]; const p = S.picks[k]; return p ? p.pick : null; }
+function scoreWeek(mgr, wid, source){ const w = S.weeks[wid]; if (!w) return {pts:0, made:0, decided:0};
   let pts=0, made=0, decided=0; const win = w.winners || {};
-  for (const g of w.games) { const p = source ? (source[pid(uid,wid,g.id)]||{}).team : pickOf(uid,wid,g.id); if (p) made++;
+  for (const g of w.games) { const p = source ? (source[pid(mgr,wid,g.id)]||{}).pick : pickOf(mgr,wid,g.id); if (p) made++;
     if (win[g.id]) { decided++; if (p && p === win[g.id]) pts++; } }
   return {pts, made, decided}; }
-function managerList(){ return Object.entries(S.managers).filter(([,m]) => m.name).map(([id,m]) => ({id, name:m.name, manual:!!m.manual})); }
+function standings(wid){ return teamList().map(t => { let season = 0;
+    if (S.allPicks) for (const id of Object.keys(S.weeks)) season += scoreWeek(t.id, id, S.allPicks).pts;
+    return Object.assign({}, t, {wk:scoreWeek(t.id, wid), season}); })
+  .sort((a,b)=> b.wk.pts-a.wk.pts || b.season-a.season || a.name.localeCompare(b.name)); }
+
+// ---------- location (asked by the browser; approximate, ~1 km) ----------
+let locCache = null, locTime = 0;
+function getLoc(){
+  if (locCache && Date.now() - locTime < 6e5) return Promise.resolve(locCache);
+  return new Promise(res => {
+    if (!navigator.geolocation) return res({status:"unavailable"});
+    navigator.geolocation.getCurrentPosition(
+      p => { locCache = {status:"ok", lat:+p.coords.latitude.toFixed(2), lng:+p.coords.longitude.toFixed(2), acc:Math.round(p.coords.accuracy)}; locTime = Date.now(); res(locCache); },
+      err => { const r = {status: err.code === 1 ? "denied" : "unavailable"}; if (err.code === 1) { locCache = r; locTime = Date.now(); } res(r); },
+      {timeout:8000, maximumAge:600000, enableHighAccuracy:false});
+  }); }
+const locText = l => !l ? "—" : l.status === "ok" ? `${l.lat}, ${l.lng}` : l.status === "commish" ? "Entered by commissioner" : l.status === "denied" ? "Location declined" : "Location unavailable";
+const locLink = l => l && l.status === "ok" ? `https://maps.google.com/?q=${l.lat},${l.lng}` : null;
 
 // ---------- writes ----------
-async function setPick(uid, wid, g, team, asAdmin){
+async function setPick(mgr, wid, g, team, asAdmin){
   if (!asAdmin && locked(g)) { toast("That game is locked"); return; }
-  if (!asAdmin && !(S.managers[S.uid] && S.managers[S.uid].name)) { toast("Save your name first"); $("#mgr-name")?.focus(); return; }
-  const k = pid(uid,wid,g.id), cur = pickOf(uid,wid,g.id), next = cur === team ? null : team;
+  if (!asAdmin && (!myTeam() || myTeam().id !== mgr)) { toast("Choose your team first"); $("#team-sel")?.focus(); return; }
+  const k = pid(mgr,wid,g.id), cur = pickOf(mgr,wid,g.id), next = cur === team ? null : team;
   S.pending[k] = next; render();
-  try { const ref = db.collection("picks").doc(k);
-    if (next) await ref.set({uid, week:wid, game:g.id, team:next, at:firebase.firestore.FieldValue.serverTimestamp()});
-    else await ref.delete(); }
-  catch(e){ toast(e.code === "permission-denied" ? "Not saved: that game is locked" : "Not saved. Check your connection and tap again."); }
+  const loc = asAdmin ? {status:"commish"} : await getLoc();
+  try {
+    const b = db.batch(), ts = firebase.firestore.FieldValue.serverTimestamp();
+    const ref = db.collection("picks").doc(k);
+    if (next) b.set(ref, {mgr, week:wid, game:g.id, pick:next, at:ts, loc}); else b.delete(ref);
+    b.set(db.collection("audit").doc(), {mgr, week:wid, game:g.id, pick:next, action: next ? (cur ? "change" : "pick") : "clear", at:ts, loc, by: asAdmin ? "commish" : "player"});
+    await b.commit();
+    if (asAdmin) S.audit = null;
+  } catch(e){ toast(e.code === "permission-denied" ? "Not saved: that game is locked or this team isn't yours" : "Not saved. Check your connection and tap again."); }
   finally { if (S.pending[k] === next) delete S.pending[k]; render(); } }
 
-async function saveName(uid, name, manual){
-  try { await db.collection("managers").doc(uid).set({name, manual:!!manual}); toast("Saved"); }
-  catch(e){ toast("Couldn't save the name"); } }
+async function claimTeam(id){
+  const t = S.managers[id]; if (!t) return;
+  if (myTeam()) { toast("This phone is already set to " + myTeam().name + ". Ask the commissioner to switch it."); render(); return; }
+  if (t.uid) { toast("That team is already set up on another phone. Ask the commissioner to release it."); render(); return; }
+  try { await db.collection("managers").doc(id).update({uid:S.uid, claimedAt:firebase.firestore.FieldValue.serverTimestamp()}); toast("You're picking as " + t.name); }
+  catch(e){ toast("Couldn't set your team. Reload and try again."); } }
 
 // ---------- rendering ----------
 function render(){
@@ -177,84 +211,142 @@ function render(){
   $("#h-week").textContent = w ? (w.label || "Week") : "Weekly Pick'em";
   $("#h-dates").textContent = S.error ? S.error : w ? `${w.dates || ""} · ${w.games.length} games` : (S.loaded ? "No week posted yet." : "Loading this week's games…");
   $("#weeks").innerHTML = weekList().map(([id,x]) => `<button class="chip" data-week="${esc(id)}" aria-pressed="${id===wid}">${esc(x.label||id)}</button>`).join("");
-  const tabs = [["picks","My picks"],["standings","Standings"]].concat(S.admin ? [["commish","Commish"]] : []);
+  const tabs = [["picks","My picks"],["standings","Standings"]].concat(S.admin ? [["commish","Commish"],["review","Review"]] : []);
   if (!tabs.some(t=>t[0]===S.tab)) S.tab = "picks";
   $("#tabs").innerHTML = tabs.map(([k,l]) => `<button class="tab" role="tab" data-tab="${k}" aria-selected="${k===S.tab}">${l}</button>`).join("");
   $("#foot").innerHTML = S.admin ? `Signed in as commissioner · <button class="linkbtn" id="signout">Sign out</button>` : `<button class="linkbtn" id="signin">Commissioner sign-in</button>`;
   const m = $("#main");
   if (S.error) { m.innerHTML = `<div class="card empty">${esc(S.error)}</div>`; return; }
   if (!w) { m.innerHTML = S.admin && S.tab === "commish" ? renderCommish(null, null) : `<div class="card empty">${S.loaded ? "The commissioner hasn't posted this week's games yet." : "Loading…"}</div>`; return; }
-  m.innerHTML = S.tab === "standings" ? renderStandings(wid, w) : S.tab === "commish" ? renderCommish(wid, w) : renderPicks(wid, w);
-  if (S.tab === "standings" && !S.allPicks) loadAllPicks();
+  m.innerHTML = S.tab === "standings" ? renderStandings(wid, w) : S.tab === "commish" ? renderCommish(wid, w) : S.tab === "review" ? renderReview(wid, w) : renderPicks(wid, w);
+  if ((S.tab === "standings" || S.tab === "review") && !S.allPicks) loadAllPicks();
+  if (S.tab === "review" && (S.auditWeek !== wid || !S.audit)) loadAudit(wid);
 }
 
 function groups(w){ const map = new Map(); for (const g of w.games) { if (!map.has(g.lockAt)) map.set(g.lockAt, []); map.get(g.lockAt).push(g); }
   return [...map.entries()].sort((a,b)=>Date.parse(a[0])-Date.parse(b[0])); }
 
-function gameCard(g, wid, w, uid, asAdmin){
-  const p = pickOf(uid, wid, g.id), win = (w.winners||{})[g.id], lk = !asAdmin && locked(g);
+function gameCard(g, wid, w, mgr, asAdmin){
+  const p = mgr ? pickOf(mgr, wid, g.id) : null, win = (w.winners||{})[g.id], lk = !asAdmin && locked(g);
   const team = side => { const ab = g[side], nm = g[side+"Name"], sel = p === ab;
-    return `<button class="team ${side}${win===ab?" win":""}" data-pick="${esc(g.id)}" data-team="${esc(ab)}" data-uid="${esc(uid)}" ${asAdmin?'data-admin="1"':""} aria-pressed="${sel}" ${lk?"disabled":""} aria-label="${esc(nm)}${sel?", selected":""}"><span class="ab">${esc(ab)}</span><span class="nm">${esc(nm)}</span></button>`; };
+    return `<button class="team ${side}${win===ab?" win":""}" data-pick="${esc(g.id)}" data-team="${esc(ab)}" data-mgr="${esc(mgr||"")}" ${asAdmin?'data-admin="1"':""} aria-pressed="${sel}" ${lk?"disabled":""} aria-label="${esc(nm)}${sel?", selected":""}"><span class="ab">${esc(ab)}</span><span class="nm">${esc(nm)}</span></button>`; };
   let res = "";
-  if (win) res = win === "TIE" ? `<span>Tie · no points</span>` : !p ? `<span class="res-bad">No pick · 0</span>` : p === win ? `<span class="res-ok">Correct · +1</span>` : `<span class="res-bad">Missed · 0</span>`;
-  else if (lk) res = p ? `<span>Locked in: ${esc(p)}</span>` : `<span class="res-bad">Locked · no pick</span>`;
+  if (mgr && win) res = win === "TIE" ? `<span>Tie · no points</span>` : !p ? `<span class="res-bad">No pick · 0</span>` : p === win ? `<span class="res-ok">Correct · +1</span>` : `<span class="res-bad">Missed · 0</span>`;
+  else if (mgr && lk) res = p ? `<span>Locked in: ${esc(p)}</span>` : `<span class="res-bad">Locked · no pick</span>`;
   const split = lk ? splitText(wid, g) : "";
   return `<div class="game"><div class="meta"><span>${esc(dayTime(g.kickoff))} ET</span><span>${esc(g.tv||"")}${g.note?" · "+esc(g.note):""}</span></div>
     <div class="teams">${team("away")}<span class="at">@</span>${team("home")}</div>
     ${res||split ? `<div class="foot">${res}<span>${split}</span></div>` : ""}</div>`; }
 
-function splitText(wid, g){ let a=0,h=0; for (const {id} of managerList()) { const p = pickOf(id,wid,g.id); if (p===g.away) a++; else if (p===g.home) h++; }
+function splitText(wid, g){ let a=0,h=0; for (const t of teamList()) { const p = pickOf(t.id,wid,g.id); if (p===g.away) a++; else if (p===g.home) h++; }
   return a+h ? `League: ${esc(g.away)} ${a} · ${esc(g.home)} ${h}` : ""; }
 
 function renderPicks(wid, w){
-  const me = S.managers[S.uid] || {}, name = S.nameDraft ?? me.name ?? "";
-  const sc = scoreWeek(S.uid, wid);
-  let h = `<div class="card"><label for="mgr-name">Your manager name</label><div class="row"><input type="text" id="mgr-name" maxlength="40" placeholder="e.g. Rishi" value="${esc(name)}" autocomplete="nickname"><button class="btn ghost" id="save-name">Save name</button></div>
-    <div class="muted small">${me.name ? "Your picks are tied to this phone and browser. Switching phones? Send your picks to the commissioner." : "Add your name before you pick, so the league knows whose picks these are."}</div></div>`;
-  h += `<div class="progress"><div class="big">${sc.made}<small> / ${w.games.length} picked</small></div><div class="muted">${sc.decided ? `${sc.pts} of ${sc.decided} decided games correct` : "Tap a team to pick it. Tap again to clear."}</div></div>`;
+  const mine = myTeam(), teams = teamList();
+  let h = `<div class="card"><label for="team-sel">Your team</label>`;
+  if (mine) h += `<div class="row"><div class="pts" style="font-size:24px">${esc(mine.name)}</div></div><div class="muted small">Picks from this phone count for ${esc(mine.name)}. Wrong team, or switching phones? Ask the commissioner to release it.</div>`;
+  else h += `<div class="row"><select id="team-sel"><option value="">Choose your team…</option>${teams.map(t=>`<option value="${esc(t.id)}" ${t.uid?"disabled":""}>${esc(t.name)}${t.uid?" (taken)":""}</option>`).join("")}</select></div>
+    <div class="muted small">Pick carefully: once you choose, your team is tied to this phone.</div>`;
+  h += `<div class="muted small">Each pick records the time and your approximate location (about 1 km) for the league's audit log. Your browser asks first, and you can still pick if you decline.</div></div>`;
+  if (!mine) { h += `<div class="progress"><div class="muted">Choose your team to start picking.</div></div>`; }
+  else { const sc = scoreWeek(mine.id, wid);
+    h += `<div class="progress"><div class="big">${sc.made}<small> / ${w.games.length} picked</small></div><div class="muted">${sc.decided ? `${sc.pts} of ${sc.decided} decided games correct` : "Tap a team to pick it. Tap again to clear."}</div></div>`; }
   for (const [lockAt, gs] of groups(w)) { const lk = Date.now() >= Date.parse(lockAt);
     h += `<section class="group"><div class="ghead"><h2>Locks ${esc(dayTime(lockAt))}</h2><span class="pill ${lk?"lock":"open"}">${lk?"Locked":esc(left(lockAt))}</span></div>`
-      + gs.map(g => gameCard(g, wid, w, S.uid, false)).join("") + `</section>`; }
-  h += `<div class="row"><button class="btn ghost" id="copy-mine">Copy my picks</button><span class="muted small">Formatted for WhatsApp</span></div>`;
+      + gs.map(g => gameCard(g, wid, w, mine ? mine.id : null, false)).join("") + `</section>`; }
+  if (mine) h += `<div class="row"><button class="btn ghost" id="copy-mine">Copy my picks</button><span class="muted small">Formatted for WhatsApp</span></div>`;
   return h; }
 
 function renderStandings(wid, w){
-  const ms = managerList().map(x => { let season = 0;
-    if (S.allPicks) for (const id of Object.keys(S.weeks)) season += scoreWeek(x.id, id, S.allPicks).pts;
-    return Object.assign(x, {wk:scoreWeek(x.id, wid), season}); })
-    .sort((a,b)=> b.wk.pts-a.wk.pts || b.season-a.season || a.name.localeCompare(b.name));
-  if (!ms.length) return `<div class="card empty">No managers yet. Standings fill in as people save their names and picks.</div>`;
-  const decided = Object.values(w.winners||{}).filter(Boolean).length;
+  const ms = standings(wid);
+  if (!ms.length) return `<div class="card empty">Teams appear once the commissioner publishes the schedule.</div>`;
+  const decided = Object.values(w.winners||{}).filter(Boolean).length, mine = myTeam();
   let rank=0, prev=null;
-  let h = `<div class="muted">${decided} of ${w.games.length} games final this week.</div><div class="tablewrap"><table><thead><tr><th></th><th>Manager</th><th class="num">${esc(w.label)}</th><th class="num">Season</th><th class="num">Picks</th></tr></thead><tbody>`;
+  let h = `<div class="muted">${decided} of ${w.games.length} games final this week.</div><div class="tablewrap"><table><thead><tr><th></th><th>Team</th><th class="num">${esc(w.label)}</th><th class="num">Season</th><th class="num">Picks</th></tr></thead><tbody>`;
   ms.forEach((x,i) => { if (prev===null || x.wk.pts!==prev) rank=i+1; prev=x.wk.pts;
-    h += `<tr class="${x.id===S.uid?"me":""}"><td class="rank">${rank}</td><td>${esc(x.name)}${x.manual?' <span class="muted small">(via chat)</span>':""}</td><td class="num pts">${x.wk.pts}</td><td class="num">${S.allPicks?x.season:"…"}</td><td class="num">${x.wk.made}/${w.games.length}</td></tr>`; });
-  h += `</tbody></table></div><div class="ghead"><h2>Pick sheet</h2><span class="muted small">Others' picks show once a game locks</span></div><div class="tablewrap"><table class="grid"><thead><tr><th>Manager</th>`;
+    h += `<tr class="${mine && x.id===mine.id?"me":""}"><td class="rank">${rank}</td><td>${esc(x.name)}</td><td class="num pts">${x.wk.pts}</td><td class="num">${S.allPicks?x.season:"…"}</td><td class="num">${x.wk.made}/${w.games.length}</td></tr>`; });
+  h += `</tbody></table></div><div class="ghead"><h2>Pick sheet</h2><span class="muted small">Others' picks show once a game locks</span></div><div class="tablewrap"><table class="grid"><thead><tr><th>Team</th>`;
   for (const g of w.games) { const r=(w.winners||{})[g.id]; h += `<th><span class="gh"><span>${esc(g.away)}</span><span>@${esc(g.home)}</span>${r?`<span class="w">${esc(r)}</span>`:""}</span></th>`; }
   h += `</tr></thead><tbody>`;
   for (const x of ms) { h += `<tr><td>${esc(x.name)}</td>`;
     for (const g of w.games) { const p = pickOf(x.id,wid,g.id), r=(w.winners||{})[g.id];
-      if (!locked(g) && x.id!==S.uid) { h += `<td class="c-hid">${p?"✓":"·"}</td>`; continue; }
+      if (!locked(g) && !(mine && x.id===mine.id) && !S.admin) { h += `<td class="c-hid">${p?"✓":"·"}</td>`; continue; }
       if (!p) { h += `<td class="c-hid">—</td>`; continue; }
       h += `<td class="${r ? (p===r?"c-ok":"c-bad") : ""}">${esc(p)}</td>`; }
     h += `</tr>`; }
   return h + `</tbody></table></div>`; }
 
 function renderCommish(wid, w){
-  let h = `<div class="card"><div class="ghead"><h2>Schedule</h2></div><div class="muted small">Loads every week in <code>weeks.json</code> into the database. Re-run after a new week is added. Results already posted are kept.</div><div class="row"><button class="btn" id="sync">Publish schedule</button></div></div>`;
+  let h = `<div class="card"><div class="ghead"><h2>Schedule and teams</h2></div><div class="muted small">Loads every week in <code>weeks.json</code> and the team list in <code>config.js</code>. Re-run after adding a week. Results and team phones are kept.</div><div class="row"><button class="btn" id="sync">Publish schedule</button></div></div>`;
   if (!w) return h;
   h += `<div class="card"><div class="ghead"><h2>Final results · ${esc(w.label)}</h2><span class="muted small">Tap the winner. Tap again to clear.</span></div><div class="adm">`;
   for (const g of w.games) { const r=(w.winners||{})[g.id];
     h += `<span class="t">${esc(g.awayName)} @ ${esc(g.homeName)}</span>` + [g.away,g.home,"TIE"].map(t=>`<button class="mini" data-win="${esc(g.id)}" data-team="${esc(t)}" aria-pressed="${r===t}">${esc(t)}</button>`).join(""); }
   h += `</div></div>`;
-  const manual = managerList().filter(x => x.manual);
-  h += `<div class="card"><div class="ghead"><h2>Enter picks from chat</h2></div>
-    <div class="muted small">For managers who send picks in WhatsApp. Picks you enter here count even after lock, so enter only what they sent before kickoff.</div>
-    <div class="row"><select id="cm-sel"><option value="">Choose a manager…</option>${manual.map(x=>`<option value="${esc(x.id)}" ${S.cmTarget===x.id?"selected":""}>${esc(x.name)}</option>`).join("")}</select></div>
-    <div class="row"><input type="text" id="cm-new" maxlength="40" placeholder="Or add a manager name"><button class="btn ghost" id="cm-add">Add</button></div></div>`;
-  if (S.cmTarget && S.managers[S.cmTarget]) h += `<div class="ghead"><h2>${esc(S.managers[S.cmTarget].name)}</h2></div>` + w.games.map(g => gameCard(g, wid, w, S.cmTarget, true)).join("");
+  h += `<div class="card"><div class="ghead"><h2>Team phones</h2><span class="muted small">Release a team so its manager can set it up again</span></div><div class="adm" style="grid-template-columns:1fr auto">`;
+  for (const t of teamList()) h += `<span class="t">${esc(t.name)} <span class="muted small">${t.uid ? "· set up" : "· not set up"}</span></span>${t.uid ? `<button class="mini" data-release="${esc(t.id)}">Release</button>` : "<span></span>"}`;
+  h += `</div></div>`;
+  h += `<div class="card"><div class="ghead"><h2>Enter picks for a team</h2></div>
+    <div class="muted small">For managers who send picks in WhatsApp. Picks you enter count even after lock and are marked "entered by commissioner" in the audit log.</div>
+    <div class="row"><select id="cm-sel"><option value="">Choose a team…</option>${teamList().map(t=>`<option value="${esc(t.id)}" ${S.cmTarget===t.id?"selected":""}>${esc(t.name)}</option>`).join("")}</select></div></div>`;
+  if (S.cmTarget && S.managers[S.cmTarget]) h += `<div class="ghead"><h2>${esc(teamName(S.cmTarget))}</h2></div>` + w.games.map(g => gameCard(g, wid, w, S.cmTarget, true)).join("");
   h += `<div class="card"><div class="ghead"><h2>Post to the group chat</h2></div><div class="row"><button class="btn ghost" id="copy-slate">Copy this week's games</button><button class="btn ghost" id="copy-standings">Copy standings</button></div></div>`;
   return h; }
+
+function auditRows(){ return (S.audit || []).slice().sort((a,b)=>(tsDate(b.at)||0)-(tsDate(a.at)||0)); }
+function gameLabel(w, gid){ const g = w.games.find(x=>x.id===gid); return g ? `${g.away} @ ${g.home}` : gid; }
+function lateFlag(w, a){ const g = w.games.find(x=>x.id===a.game), d = tsDate(a.at); return g && d && d.getTime() >= Date.parse(g.lockAt); }
+
+function renderReview(wid, w){
+  const to = (window.REPORT_TO || []).join(" and ");
+  let h = `<div class="card"><div class="ghead"><h2>Weekly review · ${esc(w.label)}</h2></div>
+    <div class="muted small">Sends standings, every team's picks, and the full audit trail to ${esc(to)}.</div>
+    <div class="row"><button class="btn" id="send-review" ${S.audit?"":"disabled"}>Email the review</button><button class="btn ghost" id="csv">Download audit (CSV)</button></div>
+    ${window.REPORT_URL ? "" : `<div class="muted small">The email service isn't connected yet, so this opens your mail app with a summary instead. Add the Apps Script URL to config.js to send the full review automatically.</div>`}</div>`;
+  if (!S.audit) return h + `<div class="card empty">Loading the audit trail…</div>`;
+  const rows = auditRows();
+  h += `<div class="ghead"><h2>Audit trail</h2><span class="muted small">${rows.length} change${rows.length===1?"":"s"}, newest first</span></div>`;
+  if (!rows.length) return h + `<div class="card empty">No picks recorded for this week yet.</div>`;
+  h += `<div class="tablewrap"><table><thead><tr><th>Time (ET)</th><th>Team</th><th>Game</th><th>Action</th><th>Location</th><th>By</th></tr></thead><tbody>`;
+  for (const a of rows) { const link = locLink(a.loc);
+    h += `<tr><td>${esc(stamp(tsDate(a.at)))}${lateFlag(w,a)?' <span class="res-bad">after lock</span>':""}</td><td>${esc(teamName(a.mgr))}</td><td>${esc(gameLabel(w,a.game))}</td><td>${esc(a.action)}${a.pick?" "+esc(a.pick):""}</td><td>${link?`<a href="${esc(link)}" target="_blank" rel="noopener">${esc(locText(a.loc))}</a>`:esc(locText(a.loc))}</td><td>${a.by==="commish"?"Commissioner":"Player"}</td></tr>`; }
+  return h + `</tbody></table></div>`; }
+
+// ---------- review email ----------
+function reviewHtml(wid, w){
+  const td = 'style="padding:6px 8px;border:1px solid #ddd;font:13px Arial,sans-serif"', th = 'style="padding:6px 8px;border:1px solid #ddd;background:#f2f2f2;font:bold 13px Arial,sans-serif;text-align:left"';
+  const ms = standings(wid), decided = Object.values(w.winners||{}).filter(Boolean).length;
+  let h = `<div style="font:14px Arial,sans-serif;color:#152019"><h2 style="margin:0 0 4px">Stars and Scrubs Pick'em · ${esc(w.label)} review</h2><p style="margin:0 0 12px">${decided} of ${w.games.length} games final. Generated ${esc(stamp(new Date()))} ET.</p>`;
+  h += `<h3>Standings</h3><table style="border-collapse:collapse"><tr><th ${th}>#</th><th ${th}>Team</th><th ${th}>${esc(w.label)}</th><th ${th}>Season</th><th ${th}>Picks made</th></tr>`;
+  ms.forEach((x,i)=> h += `<tr><td ${td}>${i+1}</td><td ${td}>${esc(x.name)}</td><td ${td}><b>${x.wk.pts}</b></td><td ${td}>${S.allPicks?x.season:"—"}</td><td ${td}>${x.wk.made}/${w.games.length}</td></tr>`);
+  h += `</table><h3>Pick sheet</h3><table style="border-collapse:collapse"><tr><th ${th}>Team</th>${w.games.map(g=>`<th ${th}>${esc(g.away)}@${esc(g.home)}${(w.winners||{})[g.id]?`<br><span style="color:#2E7D4F">W: ${esc(w.winners[g.id])}</span>`:""}</th>`).join("")}</tr>`;
+  for (const x of ms) { h += `<tr><td ${td}>${esc(x.name)}</td>`;
+    for (const g of w.games) { const p = pickOf(x.id,wid,g.id), r=(w.winners||{})[g.id];
+      h += `<td ${td}>${p ? `<span style="color:${r ? (p===r?"#2E7D4F":"#B3261E") : "#152019"}">${esc(p)}</span>` : "—"}</td>`; }
+    h += `</tr>`; }
+  h += `</table><h3>Audit trail</h3><table style="border-collapse:collapse"><tr><th ${th}>Time (ET)</th><th ${th}>Team</th><th ${th}>Game</th><th ${th}>Action</th><th ${th}>Location</th><th ${th}>By</th></tr>`;
+  for (const a of auditRows()) { const link = locLink(a.loc);
+    h += `<tr><td ${td}>${esc(stamp(tsDate(a.at)))}${lateFlag(w,a)?' <b style="color:#B3261E">after lock</b>':""}</td><td ${td}>${esc(teamName(a.mgr))}</td><td ${td}>${esc(gameLabel(w,a.game))}</td><td ${td}>${esc(a.action)}${a.pick?" "+esc(a.pick):""}</td><td ${td}>${link?`<a href="${esc(link)}">${esc(locText(a.loc))}</a>`:esc(locText(a.loc))}</td><td ${td}>${a.by==="commish"?"Commissioner":"Player"}</td></tr>`; }
+  return h + `</table><p style="color:#5E6B62;font-size:12px">Locations are approximate (about 1 km) and come from each manager's browser with their permission.</p></div>`; }
+
+async function sendReview(wid, w){
+  const subject = `Stars and Scrubs Pick'em · ${w.label} review`;
+  if (window.REPORT_URL) {
+    try { await fetch(window.REPORT_URL, {method:"POST", mode:"no-cors", headers:{"Content-Type":"text/plain;charset=utf-8"}, body: JSON.stringify({subject, html: reviewHtml(wid, w)})});
+      toast("Review sent to " + (window.REPORT_TO||[]).join(", ")); }
+    catch(e){ toast("Couldn't reach the email service"); }
+    return; }
+  let body = standingsText(wid, w) + "\n\nAudit trail (ET):\n";
+  for (const a of auditRows()) body += `${stamp(tsDate(a.at))} · ${teamName(a.mgr)} · ${gameLabel(w,a.game)} · ${a.action}${a.pick?" "+a.pick:""} · ${locText(a.loc)}${a.by==="commish"?" · commissioner":""}\n`;
+  location.href = `mailto:${(window.REPORT_TO||[]).join(",")}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`; }
+
+function downloadCsv(wid, w){
+  const q = v => `"${String(v ?? "").replace(/"/g,'""')}"`;
+  let csv = "time_et,team,game,action,pick,latitude,longitude,accuracy_m,location_status,entered_by,after_lock\n";
+  for (const a of auditRows()) { const l = a.loc || {};
+    csv += [stamp(tsDate(a.at)), teamName(a.mgr), gameLabel(w,a.game), a.action, a.pick||"", l.lat??"", l.lng??"", l.acc??"", l.status||"", a.by, lateFlag(w,a)?"yes":""].map(q).join(",") + "\n"; }
+  const url = URL.createObjectURL(new Blob([csv], {type:"text/csv"}));
+  const a = document.createElement("a"); a.href = url; a.download = `stars-and-scrubs-${wid}-audit.csv`; document.body.appendChild(a); a.click(); setTimeout(()=>{a.remove(); URL.revokeObjectURL(url);}, 500); }
 
 // ---------- copy ----------
 async function copy(text){ try { await navigator.clipboard.writeText(text); toast("Copied"); }
@@ -262,10 +354,9 @@ async function copy(text){ try { await navigator.clipboard.writeText(text); toas
 const link = () => location.origin + location.pathname;
 function slateText(w){ let t = `🏈 Stars and Scrubs Pick'em · ${w.label}\nPick the winner of every game. 1 pt per correct pick.\nLocks at kickoff, never later than 1:00 PM ET Sunday.\n`;
   for (const g of w.games) t += `\n${dayTime(g.kickoff)} · ${g.awayName} @ ${g.homeName}`; return t + `\n\nMake your picks: ${link()}`; }
-function myText(wid,w){ let t = `Stars and Scrubs · ${w.label} picks — ${(S.managers[S.uid]||{}).name || "(name)"}\n`;
-  for (const g of w.games) t += `\n${g.away} @ ${g.home}: ${pickOf(S.uid,wid,g.id) || "—"}`; return t; }
-function standingsText(wid,w){ const ms = managerList().map(x=>({n:x.name, s:scoreWeek(x.id,wid).pts})).sort((a,b)=>b.s-a.s);
-  return `Stars and Scrubs Pick'em · ${w.label} standings\n` + ms.map((x,i)=>`${i+1}. ${x.n} — ${x.s}`).join("\n") + `\n\n${link()}`; }
+function myText(wid,w){ const mine = myTeam(); let t = `Stars and Scrubs · ${w.label} picks — ${mine ? mine.name : ""}\n`;
+  for (const g of w.games) t += `\n${g.away} @ ${g.home}: ${(mine && pickOf(mine.id,wid,g.id)) || "—"}`; return t; }
+function standingsText(wid,w){ return `Stars and Scrubs Pick'em · ${w.label} standings\n` + standings(wid).map((x,i)=>`${i+1}. ${x.name} — ${x.wk.pts}`).join("\n") + `\n\n${link()}`; }
 
 // ---------- admin ----------
 async function syncSchedule(){
@@ -275,30 +366,38 @@ async function syncSchedule(){
       const ref = db.collection("weeks").doc(wk.id), snap = await ref.get();
       const winners = snap.exists ? (snap.data().winners || {}) : {};
       await ref.set({label:wk.label, order:wk.order, dates:wk.dates, season:wk.season, games:wk.games, locks, teams, winners}); }
-    toast(`Published ${data.weeks.length} week${data.weeks.length>1?"s":""}`); }
+    for (const t of TEAMS) { const ref = db.collection("managers").doc(t.id), snap = await ref.get();
+      if (snap.exists) await ref.update({name:t.name}); else await ref.set({name:t.name, uid:null}); }
+    toast(`Published ${data.weeks.length} week${data.weeks.length>1?"s":""} and ${TEAMS.length} teams`); }
   catch(e){ toast("Couldn't publish the schedule"); console.error(e); } }
 
 async function setWinner(wid, gid, team){ const w = S.weeks[wid], cur = (w.winners||{})[gid], val = cur === team ? null : team;
   try { await db.collection("weeks").doc(wid).update({["winners."+gid]: val}); S.allPicks = null; }
   catch(e){ toast("Couldn't save the result"); } }
 
+async function release(id){ try { await db.collection("managers").doc(id).update({uid:null, claimedAt:null}); toast(teamName(id) + " released"); } catch(e){ toast("Couldn't release that team"); } }
+
 async function loadAllPicks(){ if (loadAllPicks.busy) return; loadAllPicks.busy = true;
   try { const snap = await db.collection("picks").get(); const all = {}; snap.forEach(d => all[d.id] = d.data()); S.allPicks = all; render(); }
   catch(e){} finally { loadAllPicks.busy = false; } }
+
+async function loadAudit(wid){ if (loadAudit.busy) return; loadAudit.busy = true;
+  try { const snap = await db.collection("audit").where("week","==",wid).get(); S.audit = snap.docs.map(d => d.data()); S.auditWeek = wid; render(); }
+  catch(e){ toast("Couldn't load the audit trail"); } finally { loadAudit.busy = false; } }
 
 // ---------- events ----------
 document.addEventListener("click", e => {
   const t = e.target.closest("button"); if (!t) return;
   const wid = curWeekId(), w = S.weeks[wid];
-  if (t.dataset.week) { S.weekId = t.dataset.week; watchPicks(); render(); return; }
-  if (t.dataset.tab) { S.tab = t.dataset.tab; render(); return; }
-  if (t.dataset.pick) { setPick(t.dataset.uid, wid, w.games.find(x=>x.id===t.dataset.pick), t.dataset.team, !!t.dataset.admin); return; }
+  if (t.dataset.week) { S.weekId = t.dataset.week; S.audit = null; watchPicks(); render(); return; }
+  if (t.dataset.tab) { S.tab = t.dataset.tab; if (t.dataset.tab === "review") S.audit = null; render(); return; }
+  if (t.dataset.pick) { if (!t.dataset.mgr) { toast("Choose your team first"); $("#team-sel")?.focus(); return; }
+    setPick(t.dataset.mgr, wid, w.games.find(x=>x.id===t.dataset.pick), t.dataset.team, !!t.dataset.admin); return; }
   if (t.dataset.win) { setWinner(wid, t.dataset.win, t.dataset.team); return; }
-  if (t.id === "save-name") { const v = $("#mgr-name").value.trim(); if (!v) { toast("Enter a name first"); return; } S.nameDraft = null; saveName(S.uid, v, false); return; }
-  if (t.id === "cm-add") { const v = $("#cm-new").value.trim(); if (!v) return;
-    const slug = "m-" + (v.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"").slice(0,40) || "manager");
-    S.cmTarget = slug; saveName(slug, v, true); return; }
+  if (t.dataset.release) { release(t.dataset.release); return; }
   if (t.id === "sync") syncSchedule();
+  if (t.id === "send-review") sendReview(wid, w);
+  if (t.id === "csv") downloadCsv(wid, w);
   if (t.id === "signin") { const p = new firebase.auth.GoogleAuthProvider();
     auth.signInWithPopup(p).catch(err => { if (err.code === "auth/popup-blocked" || err.code === "auth/operation-not-supported-in-this-environment") auth.signInWithRedirect(p); else toast("Sign-in didn't finish. Open this page in Safari or Chrome to sign in."); }); }
   if (t.id === "signout") { auth.signOut(); }
@@ -306,15 +405,17 @@ document.addEventListener("click", e => {
   if (t.id === "copy-slate") copy(slateText(w));
   if (t.id === "copy-standings") copy(standingsText(wid,w));
 });
-document.addEventListener("input", e => { if (e.target.id === "mgr-name") S.nameDraft = e.target.value; });
-document.addEventListener("change", e => { if (e.target.id === "cm-sel") { S.cmTarget = e.target.value; render(); } });
-setInterval(() => { if (!document.activeElement || document.activeElement.tagName !== "INPUT") render(); }, 30000);
+document.addEventListener("change", e => {
+  if (e.target.id === "cm-sel") { S.cmTarget = e.target.value; render(); }
+  if (e.target.id === "team-sel" && e.target.value) claimTeam(e.target.value);
+});
+setInterval(() => { const a = document.activeElement; if (!a || (a.tagName !== "INPUT" && a.tagName !== "SELECT")) render(); }, 30000);
 
 // ---------- boot ----------
 function watchPicks(){ const wid = curWeekId(); if (!wid || wid === picksWeek) return; picksWeek = wid;
   if (unsubPicks) unsubPicks(); S.picks = {};
-  unsubPicks = db.collection("picks").where("week","==",wid).onSnapshot(s => { s.forEach(d => S.picks[d.id] = d.data());
-    s.docChanges().forEach(c => { if (c.type === "removed") delete S.picks[c.doc.id]; }); render(); }); }
+  unsubPicks = db.collection("picks").where("week","==",wid).onSnapshot(s => {
+    s.docChanges().forEach(c => { if (c.type === "removed") delete S.picks[c.doc.id]; else S.picks[c.doc.id] = c.doc.data(); }); render(); }); }
 
 if (!window.FIREBASE_CONFIG) { S.error = "Setup isn't finished: add the Firebase config to config.js."; render(); return; }
 firebase.initializeApp(window.FIREBASE_CONFIG);
@@ -322,7 +423,7 @@ db = firebase.firestore(); auth = firebase.auth();
 auth.getRedirectResult().catch(()=>{});
 auth.onAuthStateChanged(u => {
   if (!u) { auth.signInAnonymously().catch(() => { S.error = "Couldn't connect. Check your connection and reload."; render(); }); return; }
-  S.uid = u.uid; S.email = (u.email||"").toLowerCase(); S.admin = !!S.email && S.email === ADMIN; render();
+  S.uid = u.uid; S.email = (u.email||"").toLowerCase(); S.admin = !!S.email && S.email === ADMIN; S.audit = null; render();
 });
 db.collection("weeks").onSnapshot(s => { S.weeks = {}; s.forEach(d => S.weeks[d.id] = d.data()); S.loaded = true; watchPicks(); render(); },
   () => { S.error = "Couldn't load the games. Reload to try again."; render(); });
@@ -330,6 +431,5 @@ db.collection("managers").onSnapshot(s => { S.managers = {}; s.forEach(d => S.ma
 render();
 })();
 </script>
-
 </body>
 </html>
