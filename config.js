@@ -9,9 +9,9 @@ window.FIREBASE_CONFIG = {
   appId: "1:624101470919:web:95d10aff1b1368382204e2"
 };
 
-// The Google account that can post results, manage teams and see the audit trail.
-// Must match the email in firestore.rules.
-window.ADMIN_EMAIL = "rgupta42@gmail.com";
+// Google accounts that can post results, manage teams and see the audit trail.
+// Must match the emails in firestore.rules.
+window.ADMIN_EMAILS = ["rgupta42@gmail.com", "vkudur@gmail.com"];
 
 // League teams shown in the "Your team" dropdown. Keep the ids stable; names can change.
 // After editing, sign in as commissioner and tap Commish → Publish schedule.

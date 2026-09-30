@@ -4,7 +4,7 @@ service cloud.firestore {
 
     function isAdmin() {
       return request.auth != null
-        && request.auth.token.email == 'rgupta42@gmail.com'
+        && request.auth.token.email in ['rgupta42@gmail.com', 'vkudur@gmail.com']
         && request.auth.token.email_verified == true;
     }
     function weekDoc(week) {

@@ -132,7 +132,7 @@ footer{text-align:center}
 <script>
 (function(){
 const TZ = "America/New_York";
-const ADMIN = (window.ADMIN_EMAIL || "").toLowerCase();
+const ADMINS = (window.ADMIN_EMAILS || [window.ADMIN_EMAIL]).filter(Boolean).map(e => e.toLowerCase());
 const TEAMS = window.TEAMS || [];
 const S = { uid:null, email:null, admin:false, weeks:{}, managers:{}, picks:{}, allPicks:null, pending:{}, audit:null, auditWeek:null,
   weekId:null, tab:"picks", loaded:false, cmTarget:"", error:"", locNote:"" };
@@ -423,7 +423,7 @@ db = firebase.firestore(); auth = firebase.auth();
 auth.getRedirectResult().catch(()=>{});
 auth.onAuthStateChanged(u => {
   if (!u) { auth.signInAnonymously().catch(() => { S.error = "Couldn't connect. Check your connection and reload."; render(); }); return; }
-  S.uid = u.uid; S.email = (u.email||"").toLowerCase(); S.admin = !!S.email && S.email === ADMIN; S.audit = null; render();
+  S.uid = u.uid; S.email = (u.email||"").toLowerCase(); S.admin = !!S.email && ADMINS.includes(S.email); S.audit = null; render();
 });
 db.collection("weeks").onSnapshot(s => { S.weeks = {}; s.forEach(d => S.weeks[d.id] = d.data()); S.loaded = true; watchPicks(); render(); },
   () => { S.error = "Couldn't load the games. Reload to try again."; render(); });
