@@ -7,16 +7,16 @@ Weekly NFL winner picks for the Stars and Scrubs fantasy league. Static site on 
 - Every pick, change and clear is written to an append-only audit trail with server time and approximate location (~1 km, with the browser's permission).
 - Each game locks at kickoff, and no later than 1:00 PM ET Sunday. The database rules reject picks after lock.
 - 1 point per correct pick; 0 for a miss or no pick. A tie scores nobody.
-- The commissioner signs in with Google (footer link) to get the **Commish** tab: publish the schedule, post results, release team phones, and enter picks sent by chat. The **Review** tab shows the audit trail and emails the weekly review (see `emailer.gs`).
+- The commissioner signs in with Google (footer link) to get the **Commish** tab: publish the schedule, post results, release team phones, and enter picks sent by chat. The **Review** tab shows the audit trail and emails the weekly review (see `autopilot.gs`).
 
 ## Files
 - `index.html` — the app
 - `config.js` — Firebase web config + commissioner email
 - `weeks.json` — schedule; each game has `kickoff` and `lockAt` (earlier of kickoff and Sun 1:00 PM ET)
-- `emailer.gs` — Google Apps Script that sends the weekly review email
+- `autopilot.gs` + `appsscript.json` — Google Apps Script that runs hourly: posts winners from ESPN, emails the weekly review, and loads next week
 - `firestore.rules` — paste into Firebase console → Firestore → Rules
 
 ## Each week
-1. Add the new week to `weeks.json` (id, label, order, dates, games).
-2. Open the site, sign in as commissioner, Commish → **Publish schedule**.
-3. After games finish, tap winners in Commish → Final results.
+Nothing, once the autopilot is set up. It posts results as games go final, emails the review to both commissioners after the last game, then loads the next week and emails a slate to paste into WhatsApp.
+
+Manual fallback: add the week to `weeks.json`, then Commish → Publish schedule; tap winners in Commish → Final results.

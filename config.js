@@ -30,7 +30,7 @@ window.TEAMS = [
   { id: "t12", name: "Pukachu I choose you!" }
 ];
 
-// Weekly review email. Paste the Apps Script web app URL here (see emailer.gs).
+// Weekly review email. Paste the Apps Script web app URL here (see autopilot.gs, step 5).
 // Until it's set, "Email the review" opens your mail app with a summary instead.
 window.REPORT_URL = null;
 window.REPORT_TO = ["rgupta42@gmail.com", "vkudur@gmail.com"];
