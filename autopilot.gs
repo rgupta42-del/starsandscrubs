@@ -201,6 +201,7 @@ function sendReview(wid, w, weeks) {
       season: weeks.reduce((s, x) => s + score(m.id, x.id === wid ? thisWeek : x), 0),
       made: w.games.filter(g => pickOf(m.id, wid, g.id)).length }))
     .sort((a, b) => b.wk - a.wk || b.season - a.season || a.name.localeCompare(b.name));
+  rows.forEach((r, i) => r.rank = i && rows[i - 1].wk === r.wk ? rows[i - 1].rank : i + 1);
   const td = 'style="padding:6px 8px;border:1px solid #ddd;font:13px Arial,sans-serif"';
   const th = 'style="padding:6px 8px;border:1px solid #ddd;background:#f2f2f2;font:bold 13px Arial,sans-serif;text-align:left"';
   const stamp = d => d ? Utilities.formatDate(d, TZ, 'MMM d h:mm:ss a') : '';
@@ -212,7 +213,7 @@ function sendReview(wid, w, weeks) {
   let h = '<div style="font:14px Arial,sans-serif;color:#152019"><h2 style="margin:0 0 4px">Stars and Scrubs Pick\'em · ' + esc(w.label) + ' review</h2>' +
     '<p style="margin:0 0 12px">' + decided + ' of ' + w.games.length + ' games final. <a href="' + SITE + '">Open the pick\'em</a></p>';
   h += '<h3>Standings</h3><table style="border-collapse:collapse"><tr><th ' + th + '>#</th><th ' + th + '>Team</th><th ' + th + '>' + esc(w.label) + '</th><th ' + th + '>Season</th><th ' + th + '>Picks made</th></tr>';
-  rows.forEach((r, i) => h += '<tr><td ' + td + '>' + (i + 1) + '</td><td ' + td + '>' + esc(r.name) + '</td><td ' + td + '><b>' + r.wk + '</b></td><td ' + td + '>' + r.season + '</td><td ' + td + '>' + r.made + '/' + w.games.length + '</td></tr>');
+  rows.forEach(r => h += '<tr><td ' + td + '>' + r.rank + '</td><td ' + td + '>' + esc(r.name) + '</td><td ' + td + '><b>' + r.wk + '</b></td><td ' + td + '>' + r.season + '</td><td ' + td + '>' + r.made + '/' + w.games.length + '</td></tr>');
   h += '</table><h3>Pick sheet</h3><table style="border-collapse:collapse"><tr><th ' + th + '>Team</th>';
   w.games.forEach(g => { const r = (w.winners || {})[g.id]; h += '<th ' + th + '>' + esc(g.away) + '@' + esc(g.home) + (r ? '<br><span style="color:#2E7D4F">W: ' + esc(r) + '</span>' : '') + '</th>'; });
   h += '</tr>';
@@ -235,7 +236,7 @@ function sendReview(wid, w, weeks) {
   const q = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
   const head = ['Rank', 'Team'].concat(w.games.map(g => g.away + ' @ ' + g.home), ['Week points', 'Season points', 'Picks made']);
   const winRow = ['', 'WINNER'].concat(w.games.map(g => (w.winners || {})[g.id] || 'not final'), ['', '', '']);
-  const lines = [head, winRow].concat(rows.map((r, i) => [i + 1, r.name].concat(w.games.map(g => {
+  const lines = [head, winRow].concat(rows.map(r => [r.rank, r.name].concat(w.games.map(g => {
     const p = pickOf(r.id, wid, g.id), win = (w.winners || {})[g.id];
     return p ? p + (win ? (p === win ? ' (1)' : ' (0)') : '') : '— (0)'; }), [r.wk, r.season, r.made])));
   const resultsCsv = lines.map(l => l.map(q).join(',')).join('\n');
