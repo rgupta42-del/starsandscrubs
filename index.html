@@ -236,7 +236,7 @@ function gameCard(g, wid, w, mgr, asAdmin){
   if (mgr && win) res = win === "TIE" ? `<span>Tie · no points</span>` : !p ? `<span class="res-bad">No pick · 0</span>` : p === win ? `<span class="res-ok">Correct · +1</span>` : `<span class="res-bad">Missed · 0</span>`;
   else if (mgr && lk) res = p ? `<span>Locked in: ${esc(p)}</span>` : `<span class="res-bad">Locked · no pick</span>`;
   const split = lk ? splitText(wid, g) : "";
-  return `<div class="game"><div class="meta"><span>${esc(dayTime(g.kickoff))} ET</span><span>${esc(g.tv||"")}${g.note?" · "+esc(g.note):""}</span></div>
+  return `<div class="game"><div class="meta"><span>${esc(dayTime(g.kickoff))} ET</span><span>${esc([g.tv, g.note].filter(Boolean).join(" · "))}</span></div>
     <div class="teams">${team("away")}<span class="at">@</span>${team("home")}</div>
     ${res||split ? `<div class="foot">${res}<span>${split}</span></div>` : ""}</div>`; }
 

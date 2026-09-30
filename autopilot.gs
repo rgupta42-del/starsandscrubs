@@ -4,7 +4,8 @@
  * Runs every hour on Google's servers. No one has to do anything week to week:
  *   • Keeps the full schedule (Weeks FIRST_WEEK–LAST_WEEK) and the 12 teams loaded on the site,
  *     picking up NFL time changes (flexed games) for games that haven't locked yet.
- *   • Posts winners as NFL games go final (from ESPN's public scoreboard).
+ *   • Posts winners as NFL games go final.
+ *   Schedule and scores come from nflverse (github.com/nflverse/nfldata), an open NFL dataset on GitHub.
  *   • When the week's last game is final, emails the weekly review (standings, every
  *     team's picks, full audit trail) to RECIPIENTS, with a results CSV and an audit CSV attached.
  *   • Then emails next week's slate, with a message ready to paste into the league WhatsApp.
@@ -32,7 +33,12 @@ const SEASON = 2026;
 const FIRST_WEEK = 4;
 const LAST_WEEK = 17;
 const TEAMS_URL = 'https://raw.githubusercontent.com/rgupta42-del/starsandscrubs/main/teams.json';
-const ESPN_TO_SITE = { WSH: 'WAS' };
+const NFL_URL = 'https://raw.githubusercontent.com/nflverse/nfldata/master/data/games.csv';
+const TEAM_CODE = { LA: 'LAR' }; // nflverse → site abbreviations
+const NICKNAMES = { ARI: 'Cardinals', ATL: 'Falcons', BAL: 'Ravens', BUF: 'Bills', CAR: 'Panthers', CHI: 'Bears', CIN: 'Bengals',
+  CLE: 'Browns', DAL: 'Cowboys', DEN: 'Broncos', DET: 'Lions', GB: 'Packers', HOU: 'Texans', IND: 'Colts', JAX: 'Jaguars',
+  KC: 'Chiefs', LAR: 'Rams', LAC: 'Chargers', LV: 'Raiders', MIA: 'Dolphins', MIN: 'Vikings', NE: 'Patriots', NO: 'Saints',
+  NYG: 'Giants', NYJ: 'Jets', PHI: 'Eagles', PIT: 'Steelers', SEA: 'Seahawks', SF: '49ers', TB: 'Buccaneers', TEN: 'Titans', WAS: 'Commanders' };
 const BASE = 'https://firestore.googleapis.com/v1/projects/' + PROJECT + '/databases/(default)/documents';
 
 // ---------- entry points ----------
@@ -83,17 +89,14 @@ function updateResults(wk) {
   const w = wk.data, winners = w.winners || {}, now = Date.now();
   const open = (w.games || []).filter(g => !winners[g.id] && Date.parse(g.kickoff) < now);
   if (!open.length) return;
-  const events = espnWeek(w.order, w.season);
+  const byId = {}; nflGames().forEach(r => byId[r.nflId] = r);
   const updates = {};
-  for (const e of events) {
-    const comp = e.competitions[0], status = (comp.status || e.status || {}).type || {};
-    if (!status.completed) continue;
-    const home = comp.competitors.find(c => c.homeAway === 'home'), away = comp.competitors.find(c => c.homeAway === 'away');
-    const h = abbr(home.team.abbreviation), a = abbr(away.team.abbreviation);
-    const g = open.find(x => x.home === h && x.away === a);
-    if (!g) continue;
-    updates[g.id] = home.winner ? h : away.winner ? a : 'TIE';
-  }
+  open.forEach(g => {
+    const r = byId[g.nflId];
+    if (!r || r.awayScore === '' || r.homeScore === '') return;
+    const a = Number(r.awayScore), h = Number(r.homeScore);
+    updates[g.id] = a > h ? g.away : h > a ? g.home : 'TIE';
+  });
   const ids = Object.keys(updates);
   if (!ids.length) return;
   patchDoc('weeks/' + wk.id, { winners: updates }, ids.map(id => 'winners.' + id));
@@ -145,36 +148,27 @@ function syncSchedule(existing) {
 }
 
 function buildWeek(order, season, old) {
-  const events = espnWeek(order, season);
-  if (!events.length) return null;
-  const rows = events.map(e => {
-    const comp = e.competitions[0];
-    const home = comp.competitors.find(c => c.homeAway === 'home'), away = comp.competitors.find(c => c.homeAway === 'away');
-    const tv = (comp.broadcasts || []).reduce((acc, b) => acc.concat(b.names || []), []).join(' / ');
-    const city = comp.venue && comp.venue.address && comp.venue.address.city;
-    return { kickoff: new Date(e.date), away: abbr(away.team.abbreviation), awayName: away.team.shortDisplayName || away.team.name,
-      home: abbr(home.team.abbreviation), homeName: home.team.shortDisplayName || home.team.name, tv: tv,
-      note: comp.neutralSite ? (city || 'Neutral site') : '' };
-  }).sort((a, b) => a.kickoff - b.kickoff);
+  const rows = nflGames().filter(r => r.season === season && r.week === order).sort((a, b) => a.kickoff - b.kickoff);
+  if (!rows.length) return null;
 
   // Lock = kickoff, but never later than 1:00 PM ET on the week's Sunday.
   const first = rows[0].kickoff;
   const dow = Number(Utilities.formatDate(first, TZ, 'u')); // 1 = Mon … 7 = Sun
   const sunday = new Date(first.getTime() + ((7 - dow) % 7) * 864e5);
   const sunYmd = Utilities.formatDate(sunday, TZ, 'yyyy-MM-dd');
-  const offset = Utilities.formatDate(new Date(sunYmd + 'T17:00:00Z'), TZ, 'XXX');
-  const cap = new Date(sunYmd + 'T13:00:00' + offset);
+  const cap = etDate(sunYmd, '13:00');
 
   const oldGames = (old && old.games) || [], now = Date.now();
   let nextNum = oldGames.reduce((m, g) => Math.max(m, Number(g.id.slice(1)) || 0), 0);
   const games = [], locks = {}, teams = {};
   rows.forEach(r => {
-    const prev = oldGames.find(g => g.away === r.away && g.home === r.home);
+    const prev = oldGames.find(g => g.nflId === r.nflId || (g.away === r.away && g.home === r.home));
     const id = prev ? prev.id : 'g' + String(++nextNum).padStart(2, '0');
     let lock = r.kickoff < cap ? r.kickoff : cap;
     if (prev && Date.parse(prev.lockAt) <= now) lock = new Date(prev.lockAt);
-    games.push({ id: id, kickoff: r.kickoff.toISOString(), lockAt: lock.toISOString(), away: r.away, awayName: r.awayName,
-      home: r.home, homeName: r.homeName, tv: r.tv, note: r.note });
+    games.push({ id: id, nflId: r.nflId, kickoff: r.kickoff.toISOString(), lockAt: lock.toISOString(),
+      away: r.away, awayName: NICKNAMES[r.away] || r.away, home: r.home, homeName: NICKNAMES[r.home] || r.home,
+      tv: (prev && prev.tv) || '', note: r.neutral ? r.stadium : '' });
     locks[id] = lock; teams[id] = [r.away, r.home];
   });
   const last = rows[rows.length - 1].kickoff;
@@ -253,14 +247,28 @@ function sendReview(wid, w, weeks) {
     attachments: [Utilities.newBlob(resultsCsv, 'text/csv', slug + '-results.csv'), Utilities.newBlob(auditCsv, 'text/csv', slug + '-audit.csv')] });
 }
 
-// ---------- ESPN ----------
-function espnWeek(week, season) {
-  const url = 'https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?seasontype=2&week=' + week + '&dates=' + season;
-  const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
-  if (res.getResponseCode() !== 200) throw new Error('ESPN ' + res.getResponseCode());
-  return JSON.parse(res.getContentText()).events || [];
+// ---------- NFL data (nflverse) ----------
+let NFL_CACHE = null;
+function nflGames() {
+  if (NFL_CACHE) return NFL_CACHE;
+  const res = UrlFetchApp.fetch(NFL_URL, { muteHttpExceptions: true });
+  if (res.getResponseCode() !== 200) throw new Error('nflverse ' + res.getResponseCode());
+  const rows = Utilities.parseCsv(res.getContentText());
+  const col = {}; rows[0].forEach((h, i) => col[h] = i);
+  const code = t => TEAM_CODE[t] || t;
+  NFL_CACHE = rows.slice(1).filter(r => r[col.season] === String(SEASON) && r[col.game_type] === 'REG').map(r => ({
+    nflId: r[col.game_id], season: Number(r[col.season]), week: Number(r[col.week]),
+    kickoff: etDate(r[col.gameday], r[col.gametime] || '13:00'),
+    away: code(r[col.away_team]), home: code(r[col.home_team]),
+    awayScore: r[col.away_score], homeScore: r[col.home_score],
+    neutral: r[col.location] === 'Neutral', stadium: r[col.stadium] || '' }));
+  return NFL_CACHE;
 }
-function abbr(a) { return ESPN_TO_SITE[a] || a; }
+// A date and time in Eastern time ('2026-10-04', '13:00') as a Date, handling daylight saving.
+function etDate(ymd, hm) {
+  const offset = Utilities.formatDate(new Date(ymd + 'T17:00:00Z'), TZ, 'XXX');
+  return new Date(ymd + 'T' + hm + ':00' + offset);
+}
 
 // ---------- Firestore REST (runs as the project owner, so it can post results and read the audit trail) ----------
 function fsFetch(method, path, body) {
