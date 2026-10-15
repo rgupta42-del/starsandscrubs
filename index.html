@@ -106,7 +106,8 @@ tr:last-child td{border-bottom:0}
 .mini[aria-pressed="true"]{background:var(--ok);border-color:var(--ok);color:var(--panel)}
 .adm a{color:var(--accent)}
 td a{color:var(--accent)}
-.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(16px + env(safe-area-inset-bottom,0px));background:var(--fg);color:var(--bg);padding:10px 16px;border-radius:999px;font-size:14px}
+.savebar{background:var(--bad-soft);color:var(--bad);border-radius:10px;padding:10px 12px;font-size:14px}
+.toast{position:fixed;left:50%;transform:translateX(-50%);top:calc(12px + env(safe-area-inset-top,0px));z-index:10;max-width:calc(100% - 32px);text-align:center;background:var(--fg);color:var(--bg);padding:10px 16px;border-radius:999px;font-size:14px}
 @media (prefers-reduced-motion:no-preference){.team,.chip,.mini{transition:background .12s,border-color .12s}}
 .linkbtn{background:none;border:0;padding:0;font:inherit;color:var(--accent);text-decoration:underline;cursor:pointer}
 code{font-family:var(--mono);font-size:.9em}
@@ -189,7 +190,7 @@ function getLoc(){
     navigator.geolocation.getCurrentPosition(
       p => { locCache = {status:"ok", lat:+p.coords.latitude.toFixed(2), lng:+p.coords.longitude.toFixed(2), acc:Math.round(p.coords.accuracy)}; locTime = Date.now(); res(locCache); },
       err => { const r = {status: err.code === 1 ? "denied" : "unavailable"}; if (err.code === 1) { locCache = r; locTime = Date.now(); } res(r); },
-      {timeout:8000, maximumAge:600000, enableHighAccuracy:false});
+      {timeout:4000, maximumAge:600000, enableHighAccuracy:false});
   }); }
 const locText = l => !l ? "—" : l.status === "ok" ? `${l.lat}, ${l.lng}` : l.status === "commish" ? "Entered by commissioner" : l.status === "denied" ? "Location declined" : "Location unavailable";
 const locLink = l => l && l.status === "ok" ? `https://maps.google.com/?q=${l.lat},${l.lng}` : null;
@@ -208,8 +209,14 @@ async function setPick(mgr, wid, g, team, asAdmin){
     b.set(db.collection("audit").doc(), {mgr, week:wid, game:g.id, pick:next, action: next ? (cur ? "change" : "pick") : "clear", at:ts, loc, by: asAdmin ? "commish" : "player"});
     if (asAdmin && locked(g)) { const rv = db.collection("revealed").doc(k); if (next) b.set(rv, {mgr, week:wid, game:g.id, pick:next}); else b.delete(rv); }
     await b.commit();
-    if (asAdmin) S.audit = null;
-  } catch(e){ toast(e.code === "permission-denied" ? "Not saved: that game is locked or this team isn't yours" : "Not saved. Check your connection and tap again."); }
+    const rec = next ? {mgr, week:wid, game:g.id, pick:next} : null, store = S.admin ? S.picks : S.myPicks;
+    if (rec) store[k] = rec; else delete store[k];
+    S.saveError = ""; if (asAdmin) S.audit = null;
+  } catch(e){
+    S.saveError = e.code === "permission-denied"
+      ? (locked(g) ? "That game is locked." : "Your pick didn't save because this device isn't signed in to your team. Open your personal team link from your email again, then pick.")
+      : "Your pick didn't save. Check your connection and tap again.";
+    toast("Pick not saved"); console.error("pick save failed", e); }
   finally { if (S.pending[k] === next) delete S.pending[k]; render(); } }
 
 async function releaseMine(){
@@ -291,6 +298,7 @@ function renderPicks(wid, w){
     <div class="row"><input type="email" id="link-email" inputmode="email" autocomplete="email" placeholder="Email on the Yahoo league" value="${esc(S.linkEmail)}"><button class="btn ghost" id="send-link">Email me my link</button></div>
     ${S.linkMsg ? `<div class="muted small">${esc(S.linkMsg)}</div>` : ""}`;
   h += `<div class="muted small">Each pick records the time and your approximate location (about 1 km) for the league's audit log. Your browser asks first, and you can still pick if you decline.</div></div>`;
+  if (S.saveError) h += `<div class="savebar" role="alert">${esc(S.saveError)}</div>`;
   if (!mine) { h += `<div class="progress"><div class="muted">Open your team link to start picking.</div></div>`; }
   else { const sc = scoreWeek(mine.id, wid);
     h += `<div class="progress"><div class="big">${sc.made}<small> / ${w.games.length} picked</small></div><div class="muted">${sc.decided ? `${sc.pts} of ${sc.decided} decided games correct` : "Tap a team to pick it. You can change or clear a pick until that game locks."}</div></div>`; }
@@ -488,12 +496,16 @@ function resubscribe(){
   const wid = curWeekId(), w = wid && S.weeks[wid], mine = myTeam();
   const sig = [wid, S.uid, S.admin, mine && mine.id].join("|");
   if (!w || !S.uid || sig === subs.sig) return;
-  subs.fns.forEach(f => f()); subs = {sig, fns:[]}; S.picks = {}; S.myPicks = {}; S.revealed = {};
+  const same = subs.sig.split("|")[0] === sig.split("|")[0];
+  subs.fns.forEach(f => f()); subs = {sig, fns:[]};
+  if (!same) { S.picks = {}; S.myPicks = {}; S.revealed = {}; }
+  const retry = () => { clearTimeout(resubscribe.t); resubscribe.t = setTimeout(() => { subs.sig = ""; render(); }, 2000); };
   const keep = (map) => s => { s.docChanges().forEach(c => { if (c.type === "removed") delete map[c.doc.id]; else map[c.doc.id] = c.doc.data(); }); render(); };
-  subs.fns.push(db.collection("revealed").where("week","==",wid).onSnapshot(keep(S.revealed), () => {}));
-  if (S.admin) subs.fns.push(db.collection("picks").where("week","==",wid).onSnapshot(keep(S.picks), () => {}));
+  subs.fns.push(db.collection("revealed").where("week","==",wid).onSnapshot(keep(S.revealed), retry));
+  if (S.admin) subs.fns.push(db.collection("picks").where("week","==",wid).onSnapshot(keep(S.picks), retry));
   else if (mine) for (const g of w.games) { const k = pid(mine.id, wid, g.id);
-    subs.fns.push(db.collection("picks").doc(k).onSnapshot(d => { if (d.exists) S.myPicks[k] = d.data(); else delete S.myPicks[k]; render(); }, () => {})); } }
+    subs.fns.push(db.collection("picks").doc(k).onSnapshot(d => { if (d.metadata && d.metadata.fromCache && !d.exists && S.myPicks[k]) return;
+      if (d.exists) S.myPicks[k] = d.data(); else delete S.myPicks[k]; render(); }, retry)); } }
 
 if (!window.FIREBASE_CONFIG) { S.error = "Setup isn't finished: add the Firebase config to config.js."; render(); return; }
 firebase.initializeApp(window.FIREBASE_CONFIG);
