@@ -224,7 +224,7 @@ async function releaseMine(){
   } catch(e){ toast("Couldn't sign out of the team. Reload and try again."); render(); } }
 
 // Opening a personal team link (?k=...) ties this browser to that team. Any number of devices can use the same link.
-async function applyKey(){ const k = S.linkKey; if (!k || !S.uid) return; S.linkKey = null;
+async function applyKey(){ const k = S.linkKey; if (!k || !S.uid || !Object.keys(S.managers).length) return; S.linkKey = null;
   const clean = () => history.replaceState(null, "", location.pathname + location.hash);
   try {
     const snap = await db.collection("keys").doc(k).get();
