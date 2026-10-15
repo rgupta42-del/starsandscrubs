@@ -16,8 +16,11 @@ Weekly NFL winner picks for the Stars and Scrubs fantasy league. Static site on 
 - `autopilot.gs` + `appsscript.json` — Google Apps Script that runs hourly: posts winners from ESPN, emails the weekly review, and loads next week
 - `firestore.rules` — paste into Firebase console → Firestore → Rules
 
-## Each week
-Nothing. The autopilot (Apps Script, hourly) keeps Weeks 4–17 and the teams loaded from nflverse (open NFL data on GitHub) and `teams.json`,
-locks each game at kickoff or 1:00 PM ET Sunday (whichever is first), posts winners as games go final,
-emails the review with results and audit CSVs after the last game, then emails the next week's slate.
-Run `syncNow` in the Apps Script editor to reload the schedule and teams immediately.
+## Each week (automatic)
+- **Tuesday 9:00 AM ET:** every manager gets the week's games and their personal team link.
+- **Thursday 3:30 PM ET:** managers who haven't finished their picks get a reminder (and a nudge to set their Yahoo lineup).
+- **Each lock:** that game's picks become visible to the league (they're private until then).
+- **After Monday Night Football is final:** every manager gets their week and season results and standings; the commissioners get the full review with results and audit CSVs.
+
+The autopilot (Apps Script, every 5 minutes) also keeps Weeks 4–17 and the teams loaded from nflverse and `teams.json`.
+Manager emails live only in the private Code.gs in Apps Script (`LEAGUE_EMAILS`), never in this repo.

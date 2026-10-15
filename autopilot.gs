@@ -2,7 +2,10 @@
  * Stars and Scrubs Pick'em — autopilot (Google Apps Script)
  *
  * Runs every 5 minutes on Google's servers (heavier work hourly). No one has to do anything week to week:
- *   • Thursday 3:30 PM ET: emails every manager a reminder with their personal team link and pick count.
+ *   • Tuesday 9:00 AM ET: emails every manager the week's games and their personal team link.
+ *   • Thursday 3:30 PM ET: reminds managers who haven't finished their picks (and to set their Yahoo lineup).
+ *   • After Monday Night Football is final: emails each manager their week and season results and standings,
+ *     and emails the commissioners the full review with the results and audit files.
  *   • Publishes each game's picks to the league the moment it locks (picks stay private until then).
  *   • Emails a manager their team link when they ask for it on the site ("Email me my link").
  *   • Keeps the full schedule (Weeks FIRST_WEEK–LAST_WEEK) and the 12 teams loaded on the site,
@@ -75,20 +78,24 @@ function tick() {
       }
     });
     weeks = listDocs('weeks');
-    step('results', () => {
-      weeks.sort((a, b) => (a.data.order || 0) - (b.data.order || 0));
-      const now = Date.now();
-      for (const wk of weeks) {
-        const games = wk.data.games || [];
-        if (wk.data.reviewSentAt || !games.some(g => Date.parse(g.kickoff) < now)) continue;
-        updateResults(wk);
-        finishWeek(wk, weeks);
-      }
-    });
     props.setProperty('lastHeavy', String(Date.now()));
   }
   weeks.sort((a, b) => (a.data.order || 0) - (b.data.order || 0));
+  step('results', () => {
+    const now = Date.now();
+    const open = weeks.filter(wk => {
+      const games = wk.data.games || [], winners = wk.data.winners || {};
+      if (wk.data.reviewSentAt || !games.some(g => Date.parse(g.kickoff) < now)) return false;
+      const lastKick = Math.max.apply(null, games.map(g => Date.parse(g.kickoff)));
+      return games.every(g => winners[g.id]) || now > lastKick + 48 * 3600e3 ||
+        games.some(g => !winners[g.id] && Date.parse(g.kickoff) + 2.5 * 3600e3 < now); // a game should be over by now
+    });
+    if (!open.length || Date.now() - Number(props.getProperty('lastResults') || 0) < 14 * 60e3) return;
+    props.setProperty('lastResults', String(Date.now()));
+    open.forEach(wk => { updateResults(wk); finishWeek(wk, weeks); });
+  });
   step('reveal', () => revealLocked_(weeks));
+  step('tuesday links', () => sendLinks_(weeks));
   step('reminder', () => sendReminders_(weeks));
   step('link requests', handleLinkRequests_);
   if (errors.length) throw new Error(errors.join(' | '));
@@ -164,6 +171,7 @@ function sendReminders_(weeks) {
   listDocs('managers').forEach(m => {
     const to = emailsFor_(m.id); if (!to.length || !keys[m.id]) return;
     const link = teamLink_(keys[m.id]), made = counts[m.id] || 0;
+    if (made >= games.length) return; // already finished their picks
     const subject = "Stars and Scrubs · " + w.label + ": set your lineup and make your picks";
     const text = m.data.name + ',\n\nReminder: set your Yahoo lineup, and make your pick\'em picks.\n\n' +
       "You've made " + made + ' of ' + games.length + ' picks.\n\nLocks:\n' + lockLines.map(l => '• ' + l).join('\n') +
@@ -178,7 +186,97 @@ function sendReminders_(weeks) {
     try { MailApp.sendEmail({ to: to.join(','), subject: subject, body: text, htmlBody: html, name: "Stars and Scrubs Pick'em" }); sent++; }
     catch (e) { console.error('Reminder to ' + m.id + ' failed: ' + e); }
   });
-  if (sent) patchDoc('weeks/' + wk.id, { reminderSentAt: new Date() }, ['reminderSentAt']);
+  patchDoc('weeks/' + wk.id, { reminderSentAt: new Date(), reminded: sent }, ['reminderSentAt', 'reminded']);
+}
+
+// ---------- Tuesday: this week's games + personal link ----------
+function sendLinks_(weeks) {
+  const now = Date.now();
+  const wk = weeks.find(w => (w.data.games || []).length && Math.max.apply(null, w.data.games.map(g => Date.parse(g.kickoff))) > now);
+  if (!wk || wk.data.linksSentAt || !Object.keys(EMAILS).length) return;
+  const w = wk.data, games = w.games;
+  const cap = Math.max.apply(null, games.map(g => Date.parse(g.lockAt)));
+  const sendAt = etDate(Utilities.formatDate(new Date(cap - 5 * 864e5), TZ, 'yyyy-MM-dd'), '09:00').getTime();
+  const remindAt = etDate(Utilities.formatDate(new Date(cap - 3 * 864e5), TZ, 'yyyy-MM-dd'), '15:30').getTime();
+  if (now < sendAt || now >= remindAt) return; // a missed Tuesday is covered by Thursday's reminder
+  const keys = getKeys_();
+  if (!Object.keys(keys).length) return;
+  const day = iso => Utilities.formatDate(new Date(iso), TZ, 'EEE MMM d');
+  const time = iso => Utilities.formatDate(new Date(iso), TZ, 'h:mm a');
+  const byDay = []; games.forEach(g => { const d = day(g.kickoff); let b = byDay.find(x => x.d === d); if (!b) byDay.push(b = { d: d, gs: [] }); b.gs.push(g); });
+  const thu = games.filter(g => Date.parse(g.lockAt) < cap);
+  const lockNote = (thu.length ? thu.map(g => g.awayName + ' @ ' + g.homeName + ' locks at kickoff (' + day(g.lockAt) + ', ' + time(g.lockAt) + ' ET). ').join('') : '') +
+    'Everything else locks ' + day(cap) + ' at ' + time(cap) + ' ET.';
+  let sent = 0;
+  listDocs('managers').forEach(m => {
+    const to = emailsFor_(m.id); if (!to.length || !keys[m.id]) return;
+    const link = teamLink_(keys[m.id]);
+    const text = m.data.name + ',\n\n' + w.label + ' pick\'em is open. Pick the winner of every game; 1 point per correct pick.\n\n' + lockNote + '\n\n' +
+      byDay.map(b => b.d + '\n' + b.gs.map(g => '  ' + time(g.kickoff) + '  ' + g.awayName + ' @ ' + g.homeName).join('\n')).join('\n\n') +
+      '\n\nYour team link (works on any phone or computer; it\'s just for your team, so don\'t share it):\n' + link;
+    const html = '<div style="font:15px Arial,sans-serif;color:#152019;max-width:560px">' +
+      '<p style="margin:0 0 10px"><b>' + esc(m.data.name) + '</b>,</p>' +
+      '<p style="margin:0 0 10px">' + esc(w.label) + ' pick\'em is open. Pick the winner of every game; 1 point per correct pick.</p>' +
+      '<p style="margin:0 0 14px"><a href="' + link + '" style="background:#D2461E;color:#fff;padding:12px 18px;border-radius:8px;text-decoration:none;font-weight:bold;display:inline-block">Make your picks</a></p>' +
+      '<p style="margin:0 0 12px">' + esc(lockNote) + '</p>' +
+      byDay.map(b => '<p style="margin:10px 0 4px"><b>' + esc(b.d) + '</b></p><table style="border-collapse:collapse">' +
+        b.gs.map(g => '<tr><td style="padding:2px 12px 2px 0;color:#5E6B62;font-size:13px">' + esc(time(g.kickoff)) + '</td><td style="padding:2px 0">' + esc(g.awayName) + ' @ ' + esc(g.homeName) + '</td></tr>').join('') + '</table>').join('') +
+      '<p style="margin:16px 0 0;color:#5E6B62;font-size:13px">This link is just for your team and works on any phone or computer. Don\'t share it.</p></div>';
+    try { MailApp.sendEmail({ to: to.join(','), subject: "Stars and Scrubs · " + w.label + " pick'em is open", body: text, htmlBody: html, name: "Stars and Scrubs Pick'em" }); sent++; }
+    catch (e) { console.error('Link email to ' + m.id + ' failed: ' + e); }
+  });
+  patchDoc('weeks/' + wk.id, { linksSentAt: new Date() }, ['linksSentAt']);
+}
+
+// ---------- Monday night: each manager's results ----------
+function sendRecaps_(wid, w, weeks) {
+  if (!Object.keys(EMAILS).length) return;
+  const managers = listDocs('managers').map(d => ({ id: d.id, name: d.data.name }));
+  const picks = {}; listDocs('picks').forEach(d => picks[d.id] = d.data);
+  const pickOf = (m, wk, g) => (picks[m + '__' + wk + '__' + g] || {}).pick || null;
+  const score = (m, wkId, wkData) => (wkData.games || []).reduce((s, g) => { const r = (wkData.winners || {})[g.id], p = pickOf(m, wkId, g.id); return s + (r && p && p === r ? 1 : 0); }, 0);
+  const done = weeks.filter(x => (x.data.order || 0) <= w.order).map(x => x.id === wid ? { id: wid, data: w } : x);
+  const rows = managers.map(m => ({ id: m.id, name: m.name, wk: score(m.id, wid, w), season: done.reduce((s, x) => s + score(m.id, x.id, x.data), 0) }));
+  const rankBy = key => { const sorted = rows.slice().sort((a, b) => b[key] - a[key]); const r = {};
+    sorted.forEach((x, i) => r[x.id] = i && sorted[i - 1][key] === x[key] ? r[sorted[i - 1].id] : i + 1); return r; };
+  const wkRank = rankBy('wk'), seasonRank = rankBy('season');
+  const tied = (rank, key) => rows.filter(x => (key === 'wk' ? wkRank : seasonRank)[x.id] === rank).length > 1;
+  const ord = n => n + (n % 100 >= 11 && n % 100 <= 13 ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' }[n % 10] || 'th'));
+  const place = (id, key) => { const r = (key === 'wk' ? wkRank : seasonRank)[id]; return (tied(r, key) ? 'T-' : '') + ord(r); };
+  const decided = w.games.filter(g => (w.winners || {})[g.id] && w.winners[g.id] !== 'TIE').length;
+  const finals = w.games.filter(g => (w.winners || {})[g.id]).length;
+  const keys = getKeys_();
+  const table = rows.slice().sort((a, b) => b.wk - a.wk || b.season - a.season || a.name.localeCompare(b.name));
+  const seasonTable = rows.slice().sort((a, b) => b.season - a.season || b.wk - a.wk || a.name.localeCompare(b.name));
+  const td = 'padding:6px 8px;border-bottom:1px solid #e3e3e3;font:14px Arial,sans-serif';
+  const th = 'padding:6px 8px;border-bottom:2px solid #ccc;font:bold 13px Arial,sans-serif;text-align:left';
+  managers.forEach(m => {
+    const to = emailsFor_(m.id); if (!to.length) return;
+    const me = rows.find(x => x.id === m.id);
+    const link = keys[m.id] ? teamLink_(keys[m.id]) : SITE;
+    const subject = 'Stars and Scrubs · ' + w.label + ' results: ' + me.wk + ' of ' + decided + ' (' + place(m.id, 'wk') + ')';
+    const pickRows = w.games.map(g => { const p = pickOf(m.id, wid, g.id), r = (w.winners || {})[g.id];
+      const res = !r ? 'Not final' : r === 'TIE' ? 'Tie (0)' : !p ? 'No pick (0)' : p === r ? '✓ +1' : '✗ 0';
+      return { g: g.away + ' @ ' + g.home, p: p || '—', r: r || '—', res: res, good: p && r && p === r }; });
+    const text = m.name + ',\n\n' + w.label + ': ' + me.wk + ' of ' + decided + ' correct, ' + place(m.id, 'wk') + ' of ' + rows.length + ' this week.\n' +
+      'Season: ' + me.season + ' correct, ' + place(m.id, 'season') + ' of ' + rows.length + '.\n\nYour picks:\n' +
+      pickRows.map(x => '  ' + x.g + ': ' + x.p + ' (winner ' + x.r + ') ' + x.res).join('\n') + '\n\nStandings (week / season):\n' +
+      table.map(x => '  ' + place(x.id, 'wk') + '  ' + x.name + '  ' + x.wk + ' / ' + x.season).join('\n') + '\n\n' + link;
+    let h = '<div style="font:15px Arial,sans-serif;color:#152019;max-width:600px">' +
+      '<p style="margin:0 0 6px"><b>' + esc(m.name) + '</b>, here\'s how ' + esc(w.label) + ' went.</p>' +
+      (finals < w.games.length ? '<p style="margin:0 0 10px;color:#B3261E">' + (w.games.length - finals) + ' game(s) had no final score when this was sent and count as 0 for now.</p>' : '') +
+      '<table style="border-collapse:collapse;margin:8px 0 16px"><tr>' +
+      '<td style="padding:10px 18px 10px 0"><div style="font-size:12px;color:#5E6B62;text-transform:uppercase;letter-spacing:.06em">' + esc(w.label) + '</div><div style="font:bold 26px Arial,sans-serif">' + me.wk + ' / ' + decided + '</div><div style="color:#5E6B62">' + place(m.id, 'wk') + ' of ' + rows.length + '</div></td>' +
+      '<td style="padding:10px 0"><div style="font-size:12px;color:#5E6B62;text-transform:uppercase;letter-spacing:.06em">Season</div><div style="font:bold 26px Arial,sans-serif">' + me.season + '</div><div style="color:#5E6B62">' + place(m.id, 'season') + ' of ' + rows.length + '</div></td></tr></table>' +
+      '<h3 style="margin:0 0 6px;font-size:16px">Your picks</h3><table style="border-collapse:collapse;margin-bottom:18px"><tr><th style="' + th + '">Game</th><th style="' + th + '">Pick</th><th style="' + th + '">Winner</th><th style="' + th + '"></th></tr>' +
+      pickRows.map(x => '<tr><td style="' + td + '">' + esc(x.g) + '</td><td style="' + td + '">' + esc(x.p) + '</td><td style="' + td + '">' + esc(x.r) + '</td><td style="' + td + ';color:' + (x.good ? '#2E7D4F' : '#B3261E') + '">' + esc(x.res) + '</td></tr>').join('') + '</table>';
+    const standing = (list, key, label) => '<h3 style="margin:0 0 6px;font-size:16px">' + label + '</h3><table style="border-collapse:collapse;margin-bottom:18px"><tr><th style="' + th + '">#</th><th style="' + th + '">Team</th><th style="' + th + '">' + esc(w.label) + '</th><th style="' + th + '">Season</th></tr>' +
+      list.map(x => '<tr' + (x.id === m.id ? ' style="background:#F8E3DA"' : '') + '><td style="' + td + '">' + place(x.id, key) + '</td><td style="' + td + '">' + esc(x.name) + '</td><td style="' + td + (key === 'wk' ? ';font-weight:bold' : '') + '">' + x.wk + '</td><td style="' + td + (key === 'season' ? ';font-weight:bold' : '') + '">' + x.season + '</td></tr>').join('') + '</table>';
+    h += standing(table, 'wk', esc(w.label) + ' standings') + standing(seasonTable, 'season', 'Season standings') +
+      '<p><a href="' + link + '" style="color:#D2461E">Open the pick\'em</a></p></div>';
+    try { MailApp.sendEmail({ to: to.join(','), subject: subject, body: text, htmlBody: h, name: "Stars and Scrubs Pick'em" }); }
+    catch (e) { console.error('Recap to ' + m.id + ' failed: ' + e); }
+  });
 }
 
 // ---------- "Email me my link" ----------
@@ -248,10 +346,9 @@ function finishWeek(wk, weeks) {
   sendReview(wk.id, w, weeks);
   patchDoc('weeks/' + wk.id, { reviewSentAt: new Date() }, ['reviewSentAt']);
   w.reviewSentAt = new Date();
-  const next = weeks.find(x => x.data.order === w.order + 1);
-  if (next && !next.data.slateSentAt) {
-    sendSlate(next.data);
-    patchDoc('weeks/' + next.id, { slateSentAt: new Date() }, ['slateSentAt']);
+  if (!w.recapSentAt) {
+    sendRecaps_(wk.id, w, weeks);
+    patchDoc('weeks/' + wk.id, { recapSentAt: new Date() }, ['recapSentAt']);
   }
 }
 
