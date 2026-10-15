@@ -137,8 +137,10 @@ footer{text-align:center}
 const TZ = "America/New_York";
 const ADMINS = (window.ADMIN_EMAILS || [window.ADMIN_EMAIL]).filter(Boolean).map(e => e.toLowerCase());
 const S = { uid:null, email:null, admin:false, weeks:{}, managers:{}, picks:{}, allPicks:null, pending:{}, audit:null, auditWeek:null,
-  weekId:null, tab:"picks", loaded:false, cmTarget:"", error:"", locNote:"" };
-let db, auth, unsubPicks = null, picksWeek = null;
+  weekId:null, tab:"picks", loaded:false, cmTarget:"", error:"", locNote:"",
+  device:null, myPicks:{}, revealed:{}, keys:null, devices:null, linkKey:null, linkEmail:"", linkMsg:"", linkCooldown:0, confirmReset:"" };
+S.linkKey = new URLSearchParams(location.search).get("k");
+let db, auth;
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const fmt = (d, o) => new Intl.DateTimeFormat("en-US", Object.assign({timeZone:TZ}, o)).format(d instanceof Date ? d : new Date(d));
@@ -159,9 +161,15 @@ function curWeekId(){ if (S.weekId && S.weeks[S.weekId]) return S.weekId; const 
   const cur = l.find(([,w]) => Date.now() < Math.max(...(w.games||[]).map(g => Date.parse(g.kickoff))) + 16*3600e3);
   return (cur || l[l.length-1])[0]; }
 function teamList(){ return Object.entries(S.managers).map(([id,m]) => ({id, name:m.name, uid:m.uid||null})).sort((a,b)=>a.id.localeCompare(b.id)); }
-function myTeam(){ return S.uid ? teamList().find(t => t.uid === S.uid) || null : null; }
+// Your team comes from your personal team link (devices/<you>); phones set up before links existed still work.
+function myTeam(){ if (!S.uid) return null;
+  if (S.device && S.device.team && S.managers[S.device.team]) return {id:S.device.team, name:S.managers[S.device.team].name};
+  return teamList().find(t => t.uid === S.uid) || null; }
 const teamName = id => (S.managers[id] || {}).name || id;
-function pickOf(mgr, wid, gid){ const k = pid(mgr,wid,gid); if (k in S.pending) return S.pending[k]; const p = S.picks[k]; return p ? p.pick : null; }
+// Commissioners read every pick. Everyone else reads their own picks plus picks revealed at each game's lock.
+function pickOf(mgr, wid, gid){ const k = pid(mgr,wid,gid); if (k in S.pending) return S.pending[k];
+  const mine = myTeam(), p = S.admin ? S.picks[k] : (mine && mine.id === mgr ? (S.myPicks[k] || S.revealed[k]) : S.revealed[k]);
+  return p ? p.pick : null; }
 function scoreWeek(mgr, wid, source){ const w = S.weeks[wid]; if (!w) return {pts:0, made:0, decided:0};
   let pts=0, made=0, decided=0; const win = w.winners || {};
   for (const g of w.games) { const p = source ? (source[pid(mgr,wid,g.id)]||{}).pick : pickOf(mgr,wid,g.id); if (p) made++;
@@ -189,7 +197,7 @@ const locLink = l => l && l.status === "ok" ? `https://maps.google.com/?q=${l.la
 // ---------- writes ----------
 async function setPick(mgr, wid, g, team, asAdmin){
   if (!asAdmin && locked(g)) { toast("That game is locked"); return; }
-  if (!asAdmin && (!myTeam() || myTeam().id !== mgr)) { toast("Choose your team first"); $("#team-sel")?.focus(); return; }
+  if (!asAdmin && (!myTeam() || myTeam().id !== mgr)) { toast("Open your team link first"); $("#link-email")?.focus(); return; }
   const k = pid(mgr,wid,g.id), cur = pickOf(mgr,wid,g.id), next = cur === team ? null : team;
   S.pending[k] = next; render();
   const loc = asAdmin ? {status:"commish"} : await getLoc();
@@ -198,6 +206,7 @@ async function setPick(mgr, wid, g, team, asAdmin){
     const ref = db.collection("picks").doc(k);
     if (next) b.set(ref, {mgr, week:wid, game:g.id, pick:next, at:ts, loc}); else b.delete(ref);
     b.set(db.collection("audit").doc(), {mgr, week:wid, game:g.id, pick:next, action: next ? (cur ? "change" : "pick") : "clear", at:ts, loc, by: asAdmin ? "commish" : "player"});
+    if (asAdmin && locked(g)) { const rv = db.collection("revealed").doc(k); if (next) b.set(rv, {mgr, week:wid, game:g.id, pick:next}); else b.delete(rv); }
     await b.commit();
     if (asAdmin) S.audit = null;
   } catch(e){ toast(e.code === "permission-denied" ? "Not saved: that game is locked or this team isn't yours" : "Not saved. Check your connection and tap again."); }
@@ -207,18 +216,38 @@ async function releaseMine(){
   const mine = myTeam(); if (!mine) return;
   if (!S.confirmSwitch) { S.confirmSwitch = true; render(); clearTimeout(releaseMine.t); releaseMine.t = setTimeout(() => { S.confirmSwitch = false; render(); }, 6000); return; }
   S.confirmSwitch = false;
-  try { await db.collection("managers").doc(mine.id).update({uid:null, claimedAt:null}); toast("Choose your team"); }
-  catch(e){ toast("Couldn't change your team. Reload and try again."); render(); } }
+  try {
+    if (S.device) await db.collection("devices").doc(S.uid).delete();
+    const legacy = teamList().find(t => t.uid === S.uid);
+    if (legacy) await db.collection("managers").doc(legacy.id).update({uid:null, claimedAt:null});
+    S.device = null; toast("Signed out of " + mine.name); render();
+  } catch(e){ toast("Couldn't sign out of the team. Reload and try again."); render(); } }
 
-async function claimTeam(id){
-  const t = S.managers[id]; if (!t) return;
-  if (myTeam()) { toast("This phone is already set to " + myTeam().name + ". Tap Change team first."); render(); return; }
-  if (t.uid) { toast("That team is already set up on another phone. Ask the commissioner to release it."); render(); return; }
-  try { await db.collection("managers").doc(id).update({uid:S.uid, claimedAt:firebase.firestore.FieldValue.serverTimestamp()}); toast("You're picking as " + t.name); }
-  catch(e){ toast("Couldn't set your team. Reload and try again."); } }
+// Opening a personal team link (?k=...) ties this browser to that team. Any number of devices can use the same link.
+async function applyKey(){ const k = S.linkKey; if (!k || !S.uid) return; S.linkKey = null;
+  const clean = () => history.replaceState(null, "", location.pathname + location.hash);
+  try {
+    const snap = await db.collection("keys").doc(k).get();
+    if (!snap.exists) { clean(); toast("That team link has been replaced. Ask a commissioner for your new one."); return; }
+    const team = snap.data().team, legacy = teamList().find(t => t.uid === S.uid);
+    await db.collection("devices").doc(S.uid).set({team, key:k, at: firebase.firestore.FieldValue.serverTimestamp()});
+    if (legacy && legacy.id !== team) db.collection("managers").doc(legacy.id).update({uid:null, claimedAt:null}).catch(()=>{});
+    clean(); S.device = {team}; toast("You're picking as " + teamName(team)); render();
+  } catch(e){ S.linkKey = k; toast("Couldn't open your team link. Check your connection and reload."); } }
+
+async function requestLink(){
+  const email = ($("#link-email")?.value || "").trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { toast("Enter the email you use for the Yahoo league"); return; }
+  if (Date.now() < S.linkCooldown) { toast("Already sent. Give it a few minutes."); return; }
+  try { await db.collection("linkRequests").add({email, at: firebase.firestore.FieldValue.serverTimestamp()});
+    S.linkCooldown = Date.now() + 120000;
+    S.linkMsg = "Request sent. If that email is on the league list, your personal link arrives within about 5 minutes. Check spam if you don't see it.";
+    render(); }
+  catch(e){ toast("Couldn't send the request. Try again."); } }
 
 // ---------- rendering ----------
 function render(){
+  resubscribe();
   const wid = curWeekId(), w = wid && S.weeks[wid];
   $("#h-week").textContent = w ? (w.label || "Week") : "Weekly Pick'em";
   $("#h-dates").textContent = S.error ? S.error : w ? `${w.dates || ""} · ${w.games.length} games` : (S.loaded ? "No week posted yet." : "Loading this week's games…");
@@ -255,13 +284,14 @@ function splitText(wid, g){ let a=0,h=0; for (const t of teamList()) { const p =
 
 function renderPicks(wid, w){
   const mine = myTeam(), teams = teamList();
-  let h = `<div class="card"><label for="team-sel">Your team</label>`;
-  if (mine) h += `<div class="row" style="justify-content:space-between"><div class="pts" style="font-size:24px">${esc(mine.name)}</div><button class="btn ghost" id="switch-team">${S.confirmSwitch ? "Tap again to confirm" : "Change team"}</button></div>
-    <div class="muted small">${S.confirmSwitch ? `This frees up ${esc(mine.name)} and lets you choose again. Picks already made stay with ${esc(mine.name)}.` : `Picks from this phone count for ${esc(mine.name)}. Picked the wrong team? Tap Change team. Switching phones? Tap Change team here first, or ask the commissioner.`}</div>`;
-  else h += `<div class="row"><select id="team-sel"><option value="">Choose your team…</option>${teams.map(t=>`<option value="${esc(t.id)}" ${t.uid?"disabled":""}>${esc(t.name)}${t.uid?" (taken)":""}</option>`).join("")}</select></div>
-    <div class="muted small">Your team is tied to this phone. You can change it later if you pick the wrong one.</div>`;
+  let h = `<div class="card"><label for="link-email">Your team</label>`;
+  if (mine) h += `<div class="row" style="justify-content:space-between"><div class="pts" style="font-size:24px">${esc(mine.name)}</div><button class="btn ghost" id="switch-team">${S.confirmSwitch ? "Tap again to confirm" : "Not your team?"}</button></div>
+    <div class="muted small">${S.confirmSwitch ? `This signs this device out of ${esc(mine.name)}. Picks already made stay with the team.` : `Use your personal team link on any phone or computer. Your picks follow your team, not your device.`}</div>`;
+  else h += `<div class="muted small">Open your personal team link to make picks. It's in the reminder email you get every Thursday, or a commissioner can send it to you. It works on any phone or computer.</div>
+    <div class="row"><input type="email" id="link-email" inputmode="email" autocomplete="email" placeholder="Email on the Yahoo league" value="${esc(S.linkEmail)}"><button class="btn ghost" id="send-link">Email me my link</button></div>
+    ${S.linkMsg ? `<div class="muted small">${esc(S.linkMsg)}</div>` : ""}`;
   h += `<div class="muted small">Each pick records the time and your approximate location (about 1 km) for the league's audit log. Your browser asks first, and you can still pick if you decline.</div></div>`;
-  if (!mine) { h += `<div class="progress"><div class="muted">Choose your team to start picking.</div></div>`; }
+  if (!mine) { h += `<div class="progress"><div class="muted">Open your team link to start picking.</div></div>`; }
   else { const sc = scoreWeek(mine.id, wid);
     h += `<div class="progress"><div class="big">${sc.made}<small> / ${w.games.length} picked</small></div><div class="muted">${sc.decided ? `${sc.pts} of ${sc.decided} decided games correct` : "Tap a team to pick it. You can change or clear a pick until that game locks."}</div></div>`; }
   for (const [lockAt, gs] of groups(w)) { const lk = Date.now() >= Date.parse(lockAt);
@@ -275,15 +305,15 @@ function renderStandings(wid, w){
   if (!ms.length) return `<div class="card empty">Teams are loading. Check back in a few minutes.</div>`;
   const decided = Object.values(w.winners||{}).filter(Boolean).length, mine = myTeam();
   let rank=0, prev=null;
-  let h = `<div class="muted">${decided} of ${w.games.length} games final this week.</div><div class="tablewrap"><table><thead><tr><th></th><th>Team</th><th class="num">${esc(w.label)}</th><th class="num">Season</th><th class="num">Picks</th></tr></thead><tbody>`;
+  let h = `<div class="muted">${decided} of ${w.games.length} games final this week.</div><div class="tablewrap"><table><thead><tr><th></th><th>Team</th><th class="num">${esc(w.label)}</th><th class="num">Season</th>${S.admin ? `<th class="num">Picks</th>` : ""}</tr></thead><tbody>`;
   ms.forEach((x,i) => { if (prev===null || x.wk.pts!==prev) rank=i+1; prev=x.wk.pts;
-    h += `<tr class="${mine && x.id===mine.id?"me":""}"><td class="rank">${rank}</td><td>${esc(x.name)}</td><td class="num pts">${x.wk.pts}</td><td class="num">${S.allPicks?x.season:"…"}</td><td class="num">${x.wk.made}/${w.games.length}</td></tr>`; });
-  h += `</tbody></table></div><div class="ghead"><h2>Pick sheet</h2><span class="muted small">Others' picks show once a game locks</span></div><div class="tablewrap"><table class="grid"><thead><tr><th>Team</th>`;
+    h += `<tr class="${mine && x.id===mine.id?"me":""}"><td class="rank">${rank}</td><td>${esc(x.name)}</td><td class="num pts">${x.wk.pts}</td><td class="num">${S.allPicks?x.season:"…"}</td>${S.admin ? `<td class="num">${x.wk.made}/${w.games.length}</td>` : ""}</tr>`; });
+  h += `</tbody></table></div><div class="ghead"><h2>Pick sheet</h2><span class="muted small">${S.admin ? "Commissioners see picks before lock. Everyone else sees them when each game locks." : "Each game's picks appear when it locks"}</span></div><div class="tablewrap"><table class="grid"><thead><tr><th>Team</th>`;
   for (const g of w.games) { const r=(w.winners||{})[g.id]; h += `<th><span class="gh"><span>${esc(g.away)}</span><span>@${esc(g.home)}</span>${r?`<span class="w">${esc(r)}</span>`:""}</span></th>`; }
   h += `</tr></thead><tbody>`;
   for (const x of ms) { h += `<tr><td>${esc(x.name)}</td>`;
     for (const g of w.games) { const p = pickOf(x.id,wid,g.id), r=(w.winners||{})[g.id];
-      if (!locked(g) && !(mine && x.id===mine.id)) { h += `<td class="c-hid">${p?"✓":"·"}</td>`; continue; }
+      if (!locked(g) && !(mine && x.id===mine.id) && !S.admin) { h += `<td class="c-hid">·</td>`; continue; }
       if (!p) { h += `<td class="c-hid">—</td>`; continue; }
       h += `<td class="${r ? (p===r?"c-ok":"c-bad") : ""}">${esc(p)}</td>`; }
     h += `</tr>`; }
@@ -296,9 +326,14 @@ function renderCommish(wid, w){
   for (const g of w.games) { const r=(w.winners||{})[g.id];
     h += `<span class="t">${esc(g.awayName)} @ ${esc(g.homeName)}</span>` + [g.away,g.home,"TIE"].map(t=>`<button class="mini" data-win="${esc(g.id)}" data-team="${esc(t)}" aria-pressed="${r===t}">${esc(t)}</button>`).join(""); }
   h += `</div></div>`;
-  h += `<div class="card"><div class="ghead"><h2>Team phones</h2><span class="muted small">Release a team so its manager can set it up again</span></div><div class="adm" style="grid-template-columns:1fr auto">`;
-  for (const t of teamList()) h += `<span class="t">${esc(t.name)} <span class="muted small">${t.uid ? "· set up" : "· not set up"}</span></span>${t.uid ? `<button class="mini" data-release="${esc(t.id)}">Release</button>` : "<span></span>"}`;
-  h += `</div></div>`;
+  h += `<div class="card"><div class="ghead"><h2>Team links</h2><span class="muted small">Each team's personal link. Reset makes a new one and signs out every device on the old one.</span></div>`;
+  if (!S.keys) { h += `<div class="muted small">Loading links…</div></div>`; loadAdminLinks(); }
+  else { h += `<div class="adm" style="grid-template-columns:1fr auto auto">`;
+    for (const t of teamList()) { const key = keyFor(t.id), n = (S.devices || []).filter(d => d.team === t.id).length + (t.uid ? 1 : 0);
+      h += `<span class="t">${esc(t.name)} <span class="muted small">· ${n} device${n===1?"":"s"}</span></span>`
+        + `<button class="mini" data-copylink="${esc(t.id)}" ${key?"":"disabled"}>${key?"Copy link":"Not ready"}</button>`
+        + `<button class="mini" data-reset="${esc(t.id)}">${S.confirmReset===t.id?"Confirm":"Reset"}</button>`; }
+    h += `</div></div>`; }
   h += `<div class="card"><div class="ghead"><h2>Enter picks for a team</h2></div>
     <div class="muted small">For managers who send picks in WhatsApp. Picks you enter count even after lock and are marked "entered by commissioner" in the audit log.</div>
     <div class="row"><select id="cm-sel"><option value="">Choose a team…</option>${teamList().map(t=>`<option value="${esc(t.id)}" ${S.cmTarget===t.id?"selected":""}>${esc(t.name)}</option>`).join("")}</select></div></div>`;
@@ -321,8 +356,8 @@ function renderReview(wid, w){
   h += `<div class="ghead"><h2>Audit trail</h2><span class="muted small">${rows.length} change${rows.length===1?"":"s"}, newest first</span></div>`;
   if (!rows.length) return h + `<div class="card empty">No picks recorded for this week yet.</div>`;
   h += `<div class="tablewrap"><table><thead><tr><th>Time (ET)</th><th>Team</th><th>Game</th><th>Action</th><th>Location</th><th>By</th></tr></thead><tbody>`;
-  for (const a of rows) { const link = locLink(a.loc), g = w.games.find(x=>x.id===a.game), shown = !g || locked(g);
-    h += `<tr><td>${esc(stamp(tsDate(a.at)))}${lateFlag(w,a)?' <span class="res-bad">after lock</span>':""}</td><td>${esc(teamName(a.mgr))}</td><td>${esc(gameLabel(w,a.game))}</td><td>${esc(a.action)}${a.pick?(shown?" "+esc(a.pick):' <span class="muted small">(hidden until lock)</span>'):""}</td><td>${link?`<a href="${esc(link)}" target="_blank" rel="noopener">${esc(locText(a.loc))}</a>`:esc(locText(a.loc))}</td><td>${a.by==="commish"?"Commissioner":"Player"}</td></tr>`; }
+  for (const a of rows) { const link = locLink(a.loc);
+    h += `<tr><td>${esc(stamp(tsDate(a.at)))}${lateFlag(w,a)?' <span class="res-bad">after lock</span>':""}</td><td>${esc(teamName(a.mgr))}</td><td>${esc(gameLabel(w,a.game))}</td><td>${esc(a.action)}${a.pick?" "+esc(a.pick):""}</td><td>${link?`<a href="${esc(link)}" target="_blank" rel="noopener">${esc(locText(a.loc))}</a>`:esc(locText(a.loc))}</td><td>${a.by==="commish"?"Commissioner":"Player"}</td></tr>`; }
   return h + `</tbody></table></div>`; }
 
 // ---------- review email ----------
@@ -376,10 +411,25 @@ async function setWinner(wid, gid, team){ const w = S.weeks[wid], cur = (w.winne
   try { await db.collection("weeks").doc(wid).update({["winners."+gid]: val}); S.allPicks = null; }
   catch(e){ toast("Couldn't save the result"); } }
 
-async function release(id){ try { await db.collection("managers").doc(id).update({uid:null, claimedAt:null}); toast(teamName(id) + " released"); } catch(e){ toast("Couldn't release that team"); } }
+const keyFor = team => ((S.keys || []).find(k => k.team === team) || {}).id || null;
+const teamLink = key => location.origin + location.pathname + "?k=" + key;
+async function loadAdminLinks(){ if (loadAdminLinks.busy) return; loadAdminLinks.busy = true;
+  try { const [ks, ds] = await Promise.all([db.collection("keys").get(), db.collection("devices").get()]);
+    S.keys = ks.docs.map(d => ({id:d.id, team:d.data().team})); S.devices = ds.docs.map(d => ({id:d.id, team:d.data().team})); render(); }
+  catch(e){ S.keys = []; S.devices = []; toast("Couldn't load team links"); render(); } finally { loadAdminLinks.busy = false; } }
+async function resetLink(team){
+  if (S.confirmReset !== team) { S.confirmReset = team; render(); setTimeout(() => { if (S.confirmReset === team) { S.confirmReset = ""; render(); } }, 6000); return; }
+  S.confirmReset = "";
+  try { const b = db.batch(), bytes = crypto.getRandomValues(new Uint8Array(16)), key = Array.from(bytes, x => x.toString(16).padStart(2,"0")).join("");
+    (S.keys || []).filter(k => k.team === team).forEach(k => b.delete(db.collection("keys").doc(k.id)));
+    (S.devices || []).filter(d => d.team === team).forEach(d => b.delete(db.collection("devices").doc(d.id)));
+    b.set(db.collection("keys").doc(key), {team});
+    if ((S.managers[team] || {}).uid) b.update(db.collection("managers").doc(team), {uid:null, claimedAt:null});
+    await b.commit(); S.keys = null; toast(teamName(team) + " has a new link. Copy it and send it to them."); render(); }
+  catch(e){ toast("Couldn't reset that link"); } }
 
 async function loadAllPicks(){ if (loadAllPicks.busy) return; loadAllPicks.busy = true;
-  try { const snap = await db.collection("picks").get(); const all = {}; snap.forEach(d => all[d.id] = d.data()); S.allPicks = all; render(); }
+  try { const snap = await db.collection(S.admin ? "picks" : "revealed").get(); const all = {}; snap.forEach(d => all[d.id] = d.data()); S.allPicks = all; render(); }
   catch(e){} finally { loadAllPicks.busy = false; } }
 
 async function loadAudit(wid){ if (loadAudit.busy) return; loadAudit.busy = true;
@@ -406,12 +456,14 @@ async function signIn(){
 document.addEventListener("click", e => {
   const t = e.target.closest("button"); if (!t) return;
   const wid = curWeekId(), w = S.weeks[wid];
-  if (t.dataset.week) { S.weekId = t.dataset.week; S.audit = null; watchPicks(); render(); return; }
+  if (t.dataset.week) { S.weekId = t.dataset.week; S.audit = null; render(); return; }
   if (t.dataset.tab) { S.tab = t.dataset.tab; if (t.dataset.tab === "review") S.audit = null; render(); return; }
-  if (t.dataset.pick) { if (!t.dataset.mgr) { toast("Choose your team first"); $("#team-sel")?.focus(); return; }
+  if (t.dataset.pick) { if (!t.dataset.mgr) { toast("Open your team link to pick"); $("#link-email")?.focus(); return; }
     setPick(t.dataset.mgr, wid, w.games.find(x=>x.id===t.dataset.pick), t.dataset.team, !!t.dataset.admin); return; }
   if (t.dataset.win) { setWinner(wid, t.dataset.win, t.dataset.team); return; }
-  if (t.dataset.release) { release(t.dataset.release); return; }
+  if (t.dataset.copylink) { const k = keyFor(t.dataset.copylink); if (k) copy(teamLink(k)); return; }
+  if (t.dataset.reset) { resetLink(t.dataset.reset); return; }
+  if (t.id === "send-link") requestLink();
   if (t.id === "send-review") sendReview(wid, w);
   if (t.id === "csv") downloadCsv(wid, w);
   if (t.id === "signin") signIn();
@@ -421,31 +473,42 @@ document.addEventListener("click", e => {
   if (t.id === "copy-slate") copy(slateText(w));
   if (t.id === "copy-standings") copy(standingsText(wid,w));
 });
-document.addEventListener("change", e => {
-  if (e.target.id === "cm-sel") { S.cmTarget = e.target.value; render(); }
-  if (e.target.id === "team-sel" && e.target.value) claimTeam(e.target.value);
-});
+document.addEventListener("change", e => { if (e.target.id === "cm-sel") { S.cmTarget = e.target.value; render(); } });
+document.addEventListener("input", e => { if (e.target.id === "link-email") S.linkEmail = e.target.value; });
+document.addEventListener("keydown", e => { if (e.target.id === "link-email" && e.key === "Enter") requestLink(); });
 setInterval(() => { const a = document.activeElement; if (!a || (a.tagName !== "INPUT" && a.tagName !== "SELECT")) render(); }, 30000);
 
 // ---------- boot ----------
-function watchPicks(){ const wid = curWeekId(); if (!wid || wid === picksWeek) return; picksWeek = wid;
-  if (unsubPicks) unsubPicks(); S.picks = {};
-  unsubPicks = db.collection("picks").where("week","==",wid).onSnapshot(s => {
-    s.docChanges().forEach(c => { if (c.type === "removed") delete S.picks[c.doc.id]; else S.picks[c.doc.id] = c.doc.data(); }); render(); }); }
+// Live data for the week on screen: revealed picks for everyone, every pick for commissioners, your own picks for you.
+let subs = {sig:"", fns:[]}, devSub = null, devUid = null;
+function resubscribe(){
+  if (!db) return;
+  if (S.uid && S.uid !== devUid) { devUid = S.uid; if (devSub) devSub(); S.device = null;
+    devSub = db.collection("devices").doc(S.uid).onSnapshot(d => { S.device = d.exists ? d.data() : null; render(); }, () => { S.device = null; }); }
+  const wid = curWeekId(), w = wid && S.weeks[wid], mine = myTeam();
+  const sig = [wid, S.uid, S.admin, mine && mine.id].join("|");
+  if (!w || !S.uid || sig === subs.sig) return;
+  subs.fns.forEach(f => f()); subs = {sig, fns:[]}; S.picks = {}; S.myPicks = {}; S.revealed = {};
+  const keep = (map) => s => { s.docChanges().forEach(c => { if (c.type === "removed") delete map[c.doc.id]; else map[c.doc.id] = c.doc.data(); }); render(); };
+  subs.fns.push(db.collection("revealed").where("week","==",wid).onSnapshot(keep(S.revealed), () => {}));
+  if (S.admin) subs.fns.push(db.collection("picks").where("week","==",wid).onSnapshot(keep(S.picks), () => {}));
+  else if (mine) for (const g of w.games) { const k = pid(mine.id, wid, g.id);
+    subs.fns.push(db.collection("picks").doc(k).onSnapshot(d => { if (d.exists) S.myPicks[k] = d.data(); else delete S.myPicks[k]; render(); }, () => {})); } }
 
 if (!window.FIREBASE_CONFIG) { S.error = "Setup isn't finished: add the Firebase config to config.js."; render(); return; }
 firebase.initializeApp(window.FIREBASE_CONFIG);
 db = firebase.firestore(); auth = firebase.auth();
 auth.getRedirectResult().catch(()=>{});
 function onUser(u){ S.uid = u.uid; S.email = (u.email || (u.providerData.find(p => p && p.email) || {}).email || "").toLowerCase();
-  S.admin = !!S.email && ADMINS.includes(S.email); S.audit = null; render(); }
+  const was = S.admin; S.admin = !!S.email && ADMINS.includes(S.email); S.audit = null; if (was !== S.admin) { S.allPicks = null; S.keys = null; }
+  render(); if (S.linkKey) applyKey(); }
 auth.onAuthStateChanged(u => {
   if (!u) { auth.signInAnonymously().catch(() => { S.error = "Couldn't connect. Check your connection and reload."; render(); }); return; }
   onUser(u);
 });
-db.collection("weeks").onSnapshot(s => { S.weeks = {}; s.forEach(d => S.weeks[d.id] = d.data()); S.loaded = true; watchPicks(); render(); },
+db.collection("weeks").onSnapshot(s => { S.weeks = {}; s.forEach(d => S.weeks[d.id] = d.data()); S.loaded = true; render(); },
   () => { S.error = "Couldn't load the games. Reload to try again."; render(); });
-db.collection("managers").onSnapshot(s => { S.managers = {}; s.forEach(d => S.managers[d.id] = d.data()); render(); });
+db.collection("managers").onSnapshot(s => { S.managers = {}; s.forEach(d => S.managers[d.id] = d.data()); render(); if (S.linkKey) applyKey(); });
 render();
 })();
 </script>

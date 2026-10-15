@@ -13,34 +13,66 @@ service cloud.firestore {
     function beforeLock(week, game) {
       return request.time < weekDoc(week).locks[game];
     }
+    // You manage a team if this device opened that team's personal link,
+    // or (for phones set up before links existed) it claimed the team the old way.
     function ownsTeam(team) {
-      return request.auth != null
-        && get(/databases/$(database)/documents/managers/$(team)).data.uid == request.auth.uid;
+      return request.auth != null && (
+        (exists(/databases/$(database)/documents/devices/$(request.auth.uid))
+          && get(/databases/$(database)/documents/devices/$(request.auth.uid)).data.team == team)
+        || get(/databases/$(database)/documents/managers/$(team)).data.uid == request.auth.uid
+      );
     }
 
-    // Schedule, lock times and results: everyone reads, only the commissioner writes.
+    // Schedule, lock times and results: everyone reads, only commissioners write.
     match /weeks/{week} {
       allow read: if true;
       allow write: if isAdmin();
     }
 
-    // One doc per team. A phone can claim a free team or let go of its own; the commissioner can release any team.
+    // Team names. A phone set up the old way can let go of its team; commissioners can change anything.
     match /managers/{team} {
       allow read: if true;
       allow create, delete: if isAdmin();
       allow update: if isAdmin() || (
         request.auth != null
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['uid', 'claimedAt'])
-        && (
-          (resource.data.uid == null && request.resource.data.uid == request.auth.uid)      // choose a free team
-          || (resource.data.uid == request.auth.uid && request.resource.data.uid == null)   // let go of your own team
-        )
+        && resource.data.uid == request.auth.uid
+        && request.resource.data.uid == null
       );
     }
 
-    // One doc per pick: <team>__<week>__<game>. Only the team's phone, only before that game locks.
+    // Personal team links. Knowing a link's key is what proves you manage that team.
+    // Anyone can look up one key they already have; only commissioners can list or change them.
+    match /keys/{key} {
+      allow get: if true;
+      allow list, write: if isAdmin();
+    }
+
+    // Which team each device is signed in to. Created by opening a valid team link.
+    match /devices/{uid} {
+      allow get: if isAdmin() || (request.auth != null && request.auth.uid == uid);
+      allow list: if isAdmin();
+      allow create, update: if request.auth != null && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['team', 'key', 'at'])
+        && request.resource.data.at == request.time
+        && get(/databases/$(database)/documents/keys/$(request.resource.data.key)).data.team == request.resource.data.team;
+      allow delete: if isAdmin() || (request.auth != null && request.auth.uid == uid);
+    }
+
+    // "Email me my link" requests. The autopilot reads them and emails the link to that address only.
+    match /linkRequests/{id} {
+      allow create: if request.auth != null
+        && request.resource.data.keys().hasOnly(['email', 'at'])
+        && request.resource.data.email is string
+        && request.resource.data.email.size() <= 100
+        && request.resource.data.at == request.time;
+    }
+
+    // Picks: private until lock. Commissioners see all; each team sees only its own.
+    // One doc per pick: <team>__<week>__<game>. Only that team, only before that game locks.
     match /picks/{pickId} {
-      allow read: if true;
+      allow get: if isAdmin() || ownsTeam(pickId.split('__')[0]);
+      allow list: if isAdmin();
       allow create, update: if isAdmin() || (
         ownsTeam(request.resource.data.mgr)
         && request.resource.data.keys().hasOnly(['mgr', 'week', 'game', 'pick', 'at', 'loc'])
@@ -55,8 +87,13 @@ service cloud.firestore {
       );
     }
 
-    // Audit trail: append-only. Every pick, change and clear writes one entry with server time and location.
-    // Only the commissioner can read it. Nobody can edit or delete entries.
+    // Copies of picks published at each game's lock (by the autopilot). Everyone can read these.
+    match /revealed/{pickId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // Audit trail: append-only. Only commissioners can read it. Nobody can edit or delete entries.
     match /audit/{entry} {
       allow read: if isAdmin();
       allow create: if (isAdmin() && request.resource.data.by == 'commish' && request.resource.data.at == request.time) || (

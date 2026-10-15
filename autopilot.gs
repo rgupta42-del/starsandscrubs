@@ -1,7 +1,10 @@
 /**
  * Stars and Scrubs Pick'em — autopilot (Google Apps Script)
  *
- * Runs every hour on Google's servers. No one has to do anything week to week:
+ * Runs every 5 minutes on Google's servers (heavier work hourly). No one has to do anything week to week:
+ *   • Thursday 3:30 PM ET: emails every manager a reminder with their personal team link and pick count.
+ *   • Publishes each game's picks to the league the moment it locks (picks stay private until then).
+ *   • Emails a manager their team link when they ask for it on the site ("Email me my link").
  *   • Keeps the full schedule (Weeks FIRST_WEEK–LAST_WEEK) and the 12 teams loaded on the site,
  *     picking up NFL time changes (flexed games) for games that haven't locked yet.
  *   • Posts winners as NFL games go final.
@@ -40,38 +43,171 @@ const NICKNAMES = { ARI: 'Cardinals', ATL: 'Falcons', BAL: 'Ravens', BUF: 'Bills
   KC: 'Chiefs', LAR: 'Rams', LAC: 'Chargers', LV: 'Raiders', MIA: 'Dolphins', MIN: 'Vikings', NE: 'Patriots', NO: 'Saints',
   NYG: 'Giants', NYJ: 'Jets', PHI: 'Eagles', PIT: 'Steelers', SEA: 'Seahawks', SF: '49ers', TB: 'Buccaneers', TEN: 'Titans', WAS: 'Commanders' };
 const BASE = 'https://firestore.googleapis.com/v1/projects/' + PROJECT + '/databases/(default)/documents';
+const DOC_ROOT = 'projects/' + PROJECT + '/databases/(default)/documents/';
+// Manager emails live in the private Code.gs in Apps Script (never in the public repo), passed in as LEAGUE_EMAILS.
+const EMAILS = (typeof LEAGUE_EMAILS !== 'undefined' && LEAGUE_EMAILS) || {};
+const CADENCE = '5min-v1';
 
 // ---------- entry points ----------
 function setup() {
-  ScriptApp.getProjectTriggers().forEach(t => ScriptApp.deleteTrigger(t));
-  ScriptApp.newTrigger('tick').timeBased().everyHours(1).create();
+  installTrigger_();
   syncNow();
 }
 
+function installTrigger_() {
+  ScriptApp.getProjectTriggers().forEach(t => ScriptApp.deleteTrigger(t));
+  ScriptApp.newTrigger('tick').timeBased().everyMinutes(5).create();
+  PropertiesService.getScriptProperties().setProperty('cadence', CADENCE);
+}
+
 function tick() {
-  syncTeams();
-  let weeks = listDocs('weeks');
   const props = PropertiesService.getScriptProperties();
-  const last = Number(props.getProperty('scheduleSyncedAt') || 0);
-  if (weeks.length < LAST_WEEK - FIRST_WEEK + 1 || Date.now() - last > 6 * 3600e3) {
-    syncSchedule(weeks);
-    props.setProperty('scheduleSyncedAt', String(Date.now()));
+  if (props.getProperty('cadence') !== CADENCE) installTrigger_(); // moves an hourly install to every 5 minutes
+  const errors = [], step = (name, fn) => { try { fn(); } catch (e) { errors.push(name + ': ' + (e && e.message || e)); } };
+  let weeks = listDocs('weeks');
+  if (Date.now() - Number(props.getProperty('lastHeavy') || 0) > 55 * 60e3) {
+    step('teams', syncTeams);
+    step('links', ensureKeys_);
+    step('schedule', () => {
+      const last = Number(props.getProperty('scheduleSyncedAt') || 0);
+      if (weeks.length < LAST_WEEK - FIRST_WEEK + 1 || Date.now() - last > 6 * 3600e3) {
+        syncSchedule(weeks); props.setProperty('scheduleSyncedAt', String(Date.now()));
+      }
+    });
     weeks = listDocs('weeks');
+    step('results', () => {
+      weeks.sort((a, b) => (a.data.order || 0) - (b.data.order || 0));
+      const now = Date.now();
+      for (const wk of weeks) {
+        const games = wk.data.games || [];
+        if (wk.data.reviewSentAt || !games.some(g => Date.parse(g.kickoff) < now)) continue;
+        updateResults(wk);
+        finishWeek(wk, weeks);
+      }
+    });
+    props.setProperty('lastHeavy', String(Date.now()));
   }
   weeks.sort((a, b) => (a.data.order || 0) - (b.data.order || 0));
-  const now = Date.now();
-  for (const wk of weeks) {
-    const games = wk.data.games || [];
-    if (wk.data.reviewSentAt || !games.some(g => Date.parse(g.kickoff) < now)) continue;
-    updateResults(wk);
-    finishWeek(wk, weeks);
-  }
+  step('reveal', () => revealLocked_(weeks));
+  step('reminder', () => sendReminders_(weeks));
+  step('link requests', handleLinkRequests_);
+  if (errors.length) throw new Error(errors.join(' | '));
 }
 
 // Run this from the editor any time to reload teams and the full schedule right away.
 function syncNow() {
-  PropertiesService.getScriptProperties().deleteProperty('scheduleSyncedAt');
+  const props = PropertiesService.getScriptProperties();
+  props.deleteProperty('scheduleSyncedAt');
+  props.deleteProperty('lastHeavy');
   tick();
+}
+
+// ---------- team links ----------
+function getKeys_() {
+  const byTeam = {};
+  listDocs('keys').forEach(d => { if (d.data.team && !byTeam[d.data.team]) byTeam[d.data.team] = d.id; });
+  return byTeam;
+}
+function ensureKeys_() {
+  const have = getKeys_(), writes = [];
+  listDocs('managers').forEach(m => {
+    if (have[m.id]) return;
+    const key = Utilities.getUuid().replace(/-/g, '');
+    writes.push({ update: { name: DOC_ROOT + 'keys/' + key, fields: toFields({ team: m.id }) } });
+  });
+  commit_(writes);
+}
+const teamLink_ = key => SITE + '?k=' + key;
+function emailsFor_(team) { return [].concat(EMAILS[team] || []).filter(Boolean); }
+
+// ---------- reveal picks at lock ----------
+// Picks are private until their game locks. At each lock, copy that game's picks to `revealed` for everyone to see.
+function revealLocked_(weeks) {
+  const now = Date.now();
+  weeks.forEach(wk => {
+    const games = wk.data.games || [];
+    const due = games.map(g => Date.parse(g.lockAt)).filter(t => t <= now);
+    if (!due.length) return;
+    const through = Math.max.apply(null, due);
+    const done = wk.data.revealedThrough instanceof Date ? wk.data.revealedThrough.getTime() : 0;
+    if (through <= done) return;
+    const locked = {}; games.forEach(g => { if (Date.parse(g.lockAt) <= now) locked[g.id] = true; });
+    const writes = runQueryDocs_('picks', 'week', wk.id).filter(p => locked[p.data.game]).map(p => ({
+      update: { name: DOC_ROOT + 'revealed/' + p.id, fields: toFields({ mgr: p.data.mgr, week: p.data.week, game: p.data.game, pick: p.data.pick }) } }));
+    commit_(writes);
+    patchDoc('weeks/' + wk.id, { revealedThrough: new Date(through) }, ['revealedThrough']);
+  });
+}
+
+// ---------- Thursday reminder ----------
+// Thursday 3:30 PM ET each week (or as soon as possible after, until the Sunday 1:00 PM lock).
+function sendReminders_(weeks) {
+  const now = Date.now();
+  const wk = weeks.find(w => (w.data.games || []).length && Math.max.apply(null, w.data.games.map(g => Date.parse(g.kickoff))) > now);
+  if (!wk || wk.data.reminderSentAt || !Object.keys(EMAILS).length) return;
+  const w = wk.data, games = w.games;
+  const cap = Math.max.apply(null, games.map(g => Date.parse(g.lockAt)));
+  const thursday = Utilities.formatDate(new Date(cap - 3 * 864e5), TZ, 'yyyy-MM-dd');
+  const remindAt = etDate(thursday, '15:30').getTime();
+  if (now < remindAt || now >= cap) return;
+
+  const keys = getKeys_();
+  if (!Object.keys(keys).length) return; // links not created yet; try again on the next run
+  const counts = {}; runQueryDocs_('picks', 'week', wk.id).forEach(p => counts[p.data.mgr] = (counts[p.data.mgr] || 0) + 1);
+  const fmt = iso => Utilities.formatDate(new Date(iso), TZ, "EEE h:mm a");
+  const groups = {}; games.forEach(g => (groups[g.lockAt] = groups[g.lockAt] || []).push(g));
+  const lockLines = Object.keys(groups).sort().filter(t => Date.parse(t) > now).map(t => {
+    const gs = groups[t];
+    return fmt(t) + ' ET: ' + (gs.length <= 2 ? gs.map(g => g.awayName + ' @ ' + g.homeName).join(', ') : gs.length + ' games');
+  });
+  let sent = 0;
+  listDocs('managers').forEach(m => {
+    const to = emailsFor_(m.id); if (!to.length || !keys[m.id]) return;
+    const link = teamLink_(keys[m.id]), made = counts[m.id] || 0;
+    const subject = "Stars and Scrubs · " + w.label + ": set your lineup and make your picks";
+    const text = m.data.name + ',\n\nReminder: set your Yahoo lineup, and make your pick\'em picks.\n\n' +
+      "You've made " + made + ' of ' + games.length + ' picks.\n\nLocks:\n' + lockLines.map(l => '• ' + l).join('\n') +
+      '\n\nYour team link (works on any phone or computer; it\'s just for your team, so don\'t share it):\n' + link;
+    const html = '<div style="font:15px Arial,sans-serif;color:#152019;max-width:520px">' +
+      '<p style="margin:0 0 10px"><b>' + esc(m.data.name) + '</b>,</p>' +
+      '<p style="margin:0 0 10px">Reminder: set your Yahoo lineup, and make your ' + esc(w.label) + ' pick\'em picks.</p>' +
+      '<p style="margin:0 0 10px">You\'ve made <b>' + made + ' of ' + games.length + '</b> picks.</p>' +
+      '<p style="margin:0 0 4px"><b>Locks</b></p><ul style="margin:0 0 14px;padding-left:18px">' + lockLines.map(l => '<li>' + esc(l) + '</li>').join('') + '</ul>' +
+      '<p style="margin:0 0 14px"><a href="' + link + '" style="background:#D2461E;color:#fff;padding:12px 18px;border-radius:8px;text-decoration:none;font-weight:bold;display:inline-block">Make your picks</a></p>' +
+      '<p style="margin:0;color:#5E6B62;font-size:13px">This link is just for your team and works on any phone or computer. Don\'t share it.</p></div>';
+    try { MailApp.sendEmail({ to: to.join(','), subject: subject, body: text, htmlBody: html, name: "Stars and Scrubs Pick'em" }); sent++; }
+    catch (e) { console.error('Reminder to ' + m.id + ' failed: ' + e); }
+  });
+  if (sent) patchDoc('weeks/' + wk.id, { reminderSentAt: new Date() }, ['reminderSentAt']);
+}
+
+// ---------- "Email me my link" ----------
+function handleLinkRequests_() {
+  const reqs = listDocs('linkRequests');
+  if (!reqs.length) return;
+  const byEmail = {}; Object.keys(EMAILS).forEach(t => emailsFor_(t).forEach(e => byEmail[e.toLowerCase()] = t));
+  const props = PropertiesService.getScriptProperties();
+  const log = JSON.parse(props.getProperty('linkSends') || '{}'), dayAgo = Date.now() - 864e5;
+  Object.keys(log).forEach(e => { log[e] = log[e].filter(t => t > dayAgo); if (!log[e].length) delete log[e]; });
+  let keys = null, names = null, sent = 0;
+  reqs.forEach(r => {
+    const email = String(r.data.email || '').trim().toLowerCase(), team = byEmail[email];
+    if (team && sent < 20 && (log[email] || []).length < 3) {
+      keys = keys || getKeys_();
+      if (!names) { names = {}; listDocs('managers').forEach(m => names[m.id] = m.data.name); }
+      if (keys[team]) {
+        const link = teamLink_(keys[team]);
+        MailApp.sendEmail({ to: email, subject: "Your Stars and Scrubs pick'em link", name: "Stars and Scrubs Pick'em",
+          body: 'Here is the personal pick\'em link for ' + names[team] + ':\n\n' + link + '\n\nIt works on any phone or computer. Don\'t share it.',
+          htmlBody: '<div style="font:15px Arial,sans-serif;color:#152019"><p>Here is the personal pick\'em link for <b>' + esc(names[team]) + '</b>:</p>' +
+            '<p><a href="' + link + '" style="background:#D2461E;color:#fff;padding:12px 18px;border-radius:8px;text-decoration:none;font-weight:bold;display:inline-block">Open my team</a></p>' +
+            '<p style="color:#5E6B62;font-size:13px">It works on any phone or computer. Don\'t share it.</p></div>' });
+        (log[email] = log[email] || []).push(Date.now()); sent++;
+      }
+    }
+    fsFetch('delete', '/linkRequests/' + r.id);
+  });
+  props.setProperty('linkSends', JSON.stringify(log));
 }
 
 // Manual send from the site's Review tab.
@@ -289,6 +425,14 @@ function listDocs(coll) {
     token = r.nextPageToken || '';
   } while (token);
   return out;
+}
+function runQueryDocs_(coll, field, value) {
+  const r = fsFetch('post', ':runQuery', { structuredQuery: { from: [{ collectionId: coll }],
+    where: { fieldFilter: { field: { fieldPath: field }, op: 'EQUAL', value: toFs(value) } } } }) || [];
+  return r.filter(x => x.document).map(x => ({ id: x.document.name.split('/').pop(), data: fromFields(x.document.fields || {}) }));
+}
+function commit_(writes) {
+  for (let i = 0; i < writes.length; i += 400) fsFetch('post', ':commit', { writes: writes.slice(i, i + 400) });
 }
 function runQuery(coll, field, value) {
   const r = fsFetch('post', ':runQuery', { structuredQuery: { from: [{ collectionId: coll }],
